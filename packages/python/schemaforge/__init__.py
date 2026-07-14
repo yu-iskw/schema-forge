@@ -1,32 +1,9 @@
 """Schemaforge Python bindings.
 
-This package provides JSON Schema validation backed by the Schemaforge Rust
-compiler.
-
-Two execution paths are supported:
-
-1. **Native extension** – when the package is installed via ``pip install``
-   with maturin (``maturin develop`` or a wheel built with the
-   ``extension-module`` Cargo feature), the fast native Rust validator is
-   used directly through the :mod:`schemaforge._native` extension module.
-
-2. **CLI subprocess fallback** – when the native extension is not available
-   the functions shell out to the ``schemaforge`` CLI binary.  This mode is
-   useful in CI environments or developer machines where Rust is not
-   installed but the CLI is on ``PATH``.
-
-Public functions
-----------------
-- :func:`validate_json` – validate a JSON instance against a JSON Schema.
-- :func:`compile_schema` – compile a schema for repeated validation.
-
-Example
--------
->>> import schemaforge
->>> schemaforge.validate_json('{"type": "string"}', '"hello"')
-[]
->>> schemaforge.validate_json('{"type": "string"}', '42')
-['value is not of type string']  # errors list (non-empty = invalid)
+The package uses the native extension when available and falls back to the
+``schemaforge`` CLI for validation. Schema-object attribute introspection is
+also available without the native extension because it is derived from the
+already parsed schema document.
 """
 
 from __future__ import annotations
@@ -34,15 +11,24 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from typing import Any
 
 
-# ---------------------------------------------------------------------------
-# Try to import the native extension; fall back to CLI subprocess.
-# ---------------------------------------------------------------------------
+class ObjectAttribute(TypedDict):
+    """Description of one property declared in a JSON Schema object."""
+
+    name: str
+    required: bool
+    types: list[str]
+    title: str | None
+    description: str | None
+    format: str | None
+    attributes: list[ObjectAttribute]
+    schema: Any
+
 
 try:
     from schemaforge import _native as _ext  # type: ignore[import]
@@ -53,117 +39,113 @@ except ImportError:
     _NATIVE = False
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 def validate_json(schema_str: str, instance_str: str) -> list[str]:
-    """Validate *instance_str* against *schema_str*.
-
-    Both arguments must be valid JSON strings.
-
-    Returns an empty list when the instance is valid.  Returns a non-empty
-    list of human-readable error message strings when the instance is invalid.
-
-    Parameters
-    ----------
-    schema_str:
-        JSON Schema encoded as a JSON string.
-    instance_str:
-        JSON value to validate, encoded as a JSON string.
-
-    Returns
-    -------
-    list[str]
-        Empty on success; error messages on failure.
-
-    Raises
-    ------
-    ValueError
-        When either argument is not valid JSON or the schema cannot be
-        compiled.
-    """
+    """Validate a JSON instance against a JSON Schema."""
     if _NATIVE:
-        # The native extension exposes validate_json directly.
         return _ext.validate_json(schema_str, instance_str)  # type: ignore[return-value]
-
     return _cli_validate(schema_str, instance_str)
 
 
 class CompiledSchema:
-    """A compiled JSON Schema that can validate multiple instances efficiently.
-
-    Prefer :func:`compile_schema` over constructing this class directly.
-    """
+    """A compiled JSON Schema for repeated validation and introspection."""
 
     def __init__(self, schema_str: str) -> None:
         self._schema_str = schema_str
         self._native_handle: Any = None
+        try:
+            parsed = json.loads(schema_str)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"schema_str is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, (dict, bool)):
+            raise ValueError("schema_str must encode a JSON object or boolean schema")
+        self._schema = parsed
 
         if _NATIVE:
             self._native_handle = _ext.CompiledSchema(schema_str)  # type: ignore[attr-defined]
 
     def validate_json(self, instance_str: str) -> list[str]:
-        """Validate a JSON instance against this compiled schema.
-
-        Parameters
-        ----------
-        instance_str:
-            JSON value to validate, encoded as a JSON string.
-
-        Returns
-        -------
-        list[str]
-            Empty on success; error messages on failure.
-        """
+        """Validate a JSON instance against this compiled schema."""
         if self._native_handle is not None:
             return self._native_handle.validate_json(instance_str)  # type: ignore[return-value]
-
         return _cli_validate(self._schema_str, instance_str)
+
+    def object_attributes(self) -> list[ObjectAttribute]:
+        """Return ordered descriptors for root ``properties`` attributes.
+
+        Descriptors include requiredness, accepted JSON types, annotations,
+        nested object attributes, and the property's schema object. ``oneOf``
+        and ``anyOf`` variants are intentionally not flattened because that
+        would erase their alternative semantics.
+        """
+        if self._native_handle is not None and hasattr(
+            self._native_handle, "object_attributes_json"
+        ):
+            return json.loads(self._native_handle.object_attributes_json())
+        return _object_attributes(self._schema)
+
+    def object_attribute(self, name: str) -> ObjectAttribute | None:
+        """Return one root object attribute by its exact JSON property name."""
+        return next(
+            (attribute for attribute in self.object_attributes() if attribute["name"] == name),
+            None,
+        )
 
 
 def compile_schema(schema_str: str) -> CompiledSchema:
-    """Compile *schema_str* into a :class:`CompiledSchema` handle.
-
-    Compiling once and validating many times is more efficient than calling
-    :func:`validate_json` repeatedly for the same schema.
-
-    Parameters
-    ----------
-    schema_str:
-        JSON Schema encoded as a JSON string.
-
-    Returns
-    -------
-    CompiledSchema
-        A handle that can be used to validate instances.
-
-    Raises
-    ------
-    ValueError
-        When *schema_str* is not valid JSON or the schema cannot be compiled.
-    """
+    """Compile a JSON Schema into a reusable handle."""
     return CompiledSchema(schema_str)
 
 
-# ---------------------------------------------------------------------------
-# CLI subprocess fallback
-# ---------------------------------------------------------------------------
+def _schema_types(schema: Any) -> list[str]:
+    if not isinstance(schema, dict):
+        return ["null", "boolean", "number", "string", "array", "object"]
+    declared = schema.get("type")
+    if isinstance(declared, str):
+        return [declared]
+    if isinstance(declared, list):
+        return [item for item in declared if isinstance(item, str)]
+    return ["null", "boolean", "number", "string", "array", "object"]
+
+
+def _object_attributes(schema: Any) -> list[ObjectAttribute]:
+    if not isinstance(schema, dict):
+        return []
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    required_value = schema.get("required", [])
+    required = set(required_value) if isinstance(required_value, list) else set()
+
+    result: list[ObjectAttribute] = []
+    for name, child in properties.items():
+        child_schema = child if isinstance(child, (dict, bool)) else {}
+        child_dict = child if isinstance(child, dict) else {}
+        result.append(
+            {
+                "name": name,
+                "required": name in required,
+                "types": _schema_types(child_schema),
+                "title": child_dict.get("title")
+                if isinstance(child_dict.get("title"), str)
+                else None,
+                "description": child_dict.get("description")
+                if isinstance(child_dict.get("description"), str)
+                else None,
+                "format": child_dict.get("format")
+                if isinstance(child_dict.get("format"), str)
+                else None,
+                "attributes": _object_attributes(child_schema),
+                "schema": child_schema,
+            }
+        )
+    return result
 
 
 def _cli_validate(schema_str: str, instance_str: str) -> list[str]:
-    """Validate via the ``schemaforge validate`` CLI subcommand.
-
-    The CLI is invoked as a subprocess.  This path is used when the native
-    extension module is not available.
-    """
-    # Sanity-check JSON before shelling out to avoid confusing CLI errors.
     try:
         json.loads(schema_str)
     except json.JSONDecodeError as exc:
         raise ValueError(f"schema_str is not valid JSON: {exc}") from exc
-
     try:
         json.loads(instance_str)
     except json.JSONDecodeError as exc:
@@ -186,24 +168,22 @@ def _cli_validate(schema_str: str, instance_str: str) -> list[str]:
     except FileNotFoundError as exc:
         raise RuntimeError(
             "The 'schemaforge' CLI binary was not found on PATH and the "
-            "native extension module is not installed.  Install one of:\n"
-            "  pip install schemaforge  (native wheel)\n"
-            "  cargo install schemaforge-cli  (CLI only)"
+            "native extension module is not installed. Install the native "
+            "wheel or cargo install schemaforge-cli."
         ) from exc
 
     if result.returncode == 0:
         return []
-
-    # Return stderr lines stripped of trailing whitespace as the error list.
     lines = [line.strip() for line in result.stderr.splitlines() if line.strip()]
     return lines if lines else [f"validation failed (exit {result.returncode})"]
 
 
-__all__ = ["CompiledSchema", "compile_schema", "validate_json"]
-
-# ---------------------------------------------------------------------------
-# Module metadata
-# ---------------------------------------------------------------------------
+__all__ = [
+    "CompiledSchema",
+    "ObjectAttribute",
+    "compile_schema",
+    "validate_json",
+]
 
 __version__ = "0.1.0"
 
