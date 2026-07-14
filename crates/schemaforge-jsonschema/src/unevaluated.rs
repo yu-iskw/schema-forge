@@ -112,24 +112,67 @@ fn applicator_branch_evaluated_properties(
     evaluated
 }
 
+/// Maximum depth for recursive `$ref` chain following when collecting branch properties.
+const MAX_BRANCH_REF_DEPTH: usize = 8;
+
 /// Collect property names declared in `branch.properties` (and in any schema
-/// reached via a local `$ref`) into `evaluated`.
+/// reached via a local `$ref` chain or `allOf` nesting) into `evaluated`.
 fn collect_branch_props(
     branch: &Value,
     evaluated: &mut HashSet<String>,
     ctx: &ValidationContext<'_>,
 ) {
-    let Value::Object(branch_obj) = branch else {
+    collect_branch_props_depth(branch, evaluated, ctx, 0);
+}
+
+/// Recursively collect branch properties up to `MAX_BRANCH_REF_DEPTH`.
+fn collect_branch_props_depth(
+    branch: &Value,
+    evaluated: &mut HashSet<String>,
+    ctx: &ValidationContext<'_>,
+    depth: usize,
+) {
+    if depth > MAX_BRANCH_REF_DEPTH {
+        return;
+    }
+    let Value::Object(obj) = branch else {
         return;
     };
-    collect_props_from_obj(branch_obj, evaluated);
+    collect_props_from_obj(obj, evaluated);
+    collect_allof_branch_props(obj, evaluated, ctx, depth);
+    follow_ref_branch_props(obj, evaluated, ctx, depth);
+}
 
-    // Follow a local `$ref` (fragment-only) and collect its properties too.
-    if let Some(Value::String(ref_uri)) = branch_obj.get("$ref")
-        && let Some(Value::Object(target_obj)) = crate::core::resolve_ref(ref_uri, ctx)
-    {
-        collect_props_from_obj(target_obj, evaluated);
+/// Collect property names from every `allOf` sub-schema (all must pass, so all
+/// declared properties are unconditionally considered evaluated).
+fn collect_allof_branch_props(
+    obj: &Map<String, Value>,
+    evaluated: &mut HashSet<String>,
+    ctx: &ValidationContext<'_>,
+    depth: usize,
+) {
+    let Some(Value::Array(all_of)) = obj.get("allOf") else {
+        return;
+    };
+    for sub in all_of {
+        collect_branch_props_depth(sub, evaluated, ctx, depth + 1);
     }
+}
+
+/// Follow a local `$ref` one hop and continue recursive collection.
+fn follow_ref_branch_props(
+    obj: &Map<String, Value>,
+    evaluated: &mut HashSet<String>,
+    ctx: &ValidationContext<'_>,
+    depth: usize,
+) {
+    let Some(Value::String(ref_uri)) = obj.get("$ref") else {
+        return;
+    };
+    let Some(target) = crate::core::resolve_ref(ref_uri, ctx) else {
+        return;
+    };
+    collect_branch_props_depth(target, evaluated, ctx, depth + 1);
 }
 
 fn collect_props_from_obj(obj: &Map<String, Value>, evaluated: &mut HashSet<String>) {
@@ -326,5 +369,51 @@ mod tests {
         );
         // Unknown extra property must still be rejected.
         assert!(!valid(&s, &json!({"name": "Alice", "extra": 1})));
+    }
+
+    #[test]
+    fn unevaluated_properties_allof_ref_chain_ab_properties_evaluated() {
+        // allOf branch has $ref #/$defs/A; A itself has $ref #/$defs/B; B has
+        // properties.  The compiler must follow the chain so "foo" is evaluated.
+        let s = json!({
+            "$defs": {
+                "A": {"$ref": "#/$defs/B"},
+                "B": {"properties": {"foo": {"type": "integer"}}}
+            },
+            "allOf": [{"$ref": "#/$defs/A"}],
+            "unevaluatedProperties": false
+        });
+        assert!(
+            valid(&s, &json!({"foo": 1})),
+            "property in chain-referenced schema must be treated as evaluated"
+        );
+        assert!(
+            !valid(&s, &json!({"foo": 1, "bar": 2})),
+            "property not in any chain must still be rejected"
+        );
+    }
+
+    #[test]
+    fn unevaluated_properties_allof_ref_target_allof_properties_evaluated() {
+        // allOf branch has $ref #/$defs/Named; Named has allOf that declares
+        // a `name` property.  Properties from the nested allOf must also be
+        // treated as evaluated.
+        let s = json!({
+            "$defs": {
+                "Named": {
+                    "allOf": [{"properties": {"name": {"type": "string"}}}]
+                }
+            },
+            "allOf": [{"$ref": "#/$defs/Named"}],
+            "unevaluatedProperties": false
+        });
+        assert!(
+            valid(&s, &json!({"name": "Alice"})),
+            "property inside $ref target's allOf must be treated as evaluated"
+        );
+        assert!(
+            !valid(&s, &json!({"name": "Alice", "extra": 1})),
+            "unevaluated extra property must still be rejected"
+        );
     }
 }
