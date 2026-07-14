@@ -220,6 +220,49 @@ fn collect_branch_props_depth(
     collect_props_from_obj(obj, instance, evaluated, ctx);
     collect_allof_branch_props(obj, instance, evaluated, ctx, depth);
     follow_ref_branch_props(obj, instance, evaluated, ctx, depth);
+    collect_anyof_oneof_sub_props(obj, instance, evaluated, ctx, depth);
+    collect_if_then_else_sub_props(obj, instance, evaluated, ctx, depth);
+}
+
+/// Collect property names from successful `anyOf`/`oneOf` branches nested
+/// inside a branch schema.
+fn collect_anyof_oneof_sub_props(
+    obj: &Map<String, Value>,
+    instance: &Value,
+    evaluated: &mut HashSet<String>,
+    ctx: &ValidationContext<'_>,
+    depth: usize,
+) {
+    for applicator_key in &["anyOf", "oneOf"] {
+        let Some(Value::Array(branches)) = obj.get(*applicator_key) else {
+            continue;
+        };
+        for branch in branches {
+            if validate_schema(branch, instance, "", ctx).is_valid() {
+                collect_branch_props_depth(branch, instance, evaluated, ctx, depth + 1);
+            }
+        }
+    }
+}
+
+/// Collect property names from `if` (always) and the active `then`/`else`
+/// branch nested inside a branch schema.
+fn collect_if_then_else_sub_props(
+    obj: &Map<String, Value>,
+    instance: &Value,
+    evaluated: &mut HashSet<String>,
+    ctx: &ValidationContext<'_>,
+    depth: usize,
+) {
+    let Some(if_schema) = obj.get("if") else {
+        return;
+    };
+    collect_branch_props_depth(if_schema, instance, evaluated, ctx, depth + 1);
+    let condition_met = validate_schema(if_schema, instance, "", ctx).is_valid();
+    let branch_key = if condition_met { "then" } else { "else" };
+    if let Some(branch) = obj.get(branch_key) {
+        collect_branch_props_depth(branch, instance, evaluated, ctx, depth + 1);
+    }
 }
 
 /// Collect property names from every `allOf` sub-schema (all must pass, so all
@@ -316,11 +359,11 @@ fn apply_unevaluated_items(
     }
 
     // Collect contains schemas once — not per array element — so large arrays
-    // don't re-walk allOf/$ref for every index.
-    let contains_schemas = collect_contains_schemas(obj, ctx);
+    // don't re-walk allOf/anyOf/$ref for every index.
+    let contains_schemas = collect_contains_schemas(obj, instance, ctx);
     for (i, item) in items.iter().enumerate().skip(effective_prefix_len) {
         // Draft 2020-12 §11.2: items matching `contains` (including those from
-        // allOf/$ref targets) are evaluated.
+        // allOf/anyOf/oneOf/if/then/else/$ref) are evaluated.
         if contains_schemas
             .iter()
             .any(|contains| validate_schema(contains, item, "", ctx).is_valid())
@@ -332,19 +375,24 @@ fn apply_unevaluated_items(
     }
 }
 
-/// Collect `contains` schemas from `obj`, its `allOf` branches, and `$ref`
-/// targets (same reachability as the former per-item walk).
+/// Collect `contains` schemas from `obj` and all reachable sub-schemas.
+///
+/// Reaches through `allOf` (unconditionally), successful `anyOf`/`oneOf`
+/// branches, `if` (always) plus the active `then`/`else` branch, and `$ref`
+/// targets — mirroring the reachability rules used for properties.
 fn collect_contains_schemas<'a>(
     obj: &'a Map<String, Value>,
+    instance: &Value,
     ctx: &ValidationContext<'a>,
 ) -> Vec<&'a Value> {
     let mut out = Vec::new();
-    collect_contains_schemas_depth(obj, ctx, 0, &mut out);
+    collect_contains_schemas_depth(obj, instance, ctx, 0, &mut out);
     out
 }
 
 fn collect_contains_schemas_depth<'a>(
     obj: &'a Map<String, Value>,
+    instance: &Value,
     ctx: &ValidationContext<'a>,
     depth: usize,
     out: &mut Vec<&'a Value>,
@@ -355,28 +403,76 @@ fn collect_contains_schemas_depth<'a>(
     if let Some(contains) = obj.get("contains") {
         out.push(contains);
     }
+    // allOf: all branches contribute unconditionally.
     if let Some(Value::Array(branches)) = obj.get("allOf") {
         for branch in branches {
             if let Value::Object(b) = branch {
-                collect_contains_schemas_depth(b, ctx, depth + 1, out);
+                collect_contains_schemas_depth(b, instance, ctx, depth + 1, out);
             }
         }
     }
+    // anyOf/oneOf: only successful branches contribute.
+    collect_anyof_oneof_contains(obj, instance, ctx, depth, out);
+    // if always; then when condition met; else when not.
+    collect_if_then_else_contains(obj, instance, ctx, depth, out);
+    // $ref target.
     if let Some(Value::String(ref_uri)) = obj.get("$ref")
         && let Some(Value::Object(target)) = crate::core::resolve_ref(ref_uri, ctx)
     {
-        collect_contains_schemas_depth(target, ctx, depth + 1, out);
+        collect_contains_schemas_depth(target, instance, ctx, depth + 1, out);
+    }
+}
+
+fn collect_anyof_oneof_contains<'a>(
+    obj: &'a Map<String, Value>,
+    instance: &Value,
+    ctx: &ValidationContext<'a>,
+    depth: usize,
+    out: &mut Vec<&'a Value>,
+) {
+    for applicator_key in &["anyOf", "oneOf"] {
+        if let Some(Value::Array(branches)) = obj.get(*applicator_key) {
+            for branch in branches {
+                if validate_schema(branch, instance, "", ctx).is_valid()
+                    && let Value::Object(b) = branch
+                {
+                    collect_contains_schemas_depth(b, instance, ctx, depth + 1, out);
+                }
+            }
+        }
+    }
+}
+
+fn collect_if_then_else_contains<'a>(
+    obj: &'a Map<String, Value>,
+    instance: &Value,
+    ctx: &ValidationContext<'a>,
+    depth: usize,
+    out: &mut Vec<&'a Value>,
+) {
+    let Some(if_schema) = obj.get("if") else {
+        return;
+    };
+    // `if` always evaluates.
+    if let Value::Object(b) = if_schema {
+        collect_contains_schemas_depth(b, instance, ctx, depth + 1, out);
+    }
+    let condition_met = validate_schema(if_schema, instance, "", ctx).is_valid();
+    let branch_key = if condition_met { "then" } else { "else" };
+    if let Some(Value::Object(b)) = obj.get(branch_key) {
+        collect_contains_schemas_depth(b, instance, ctx, depth + 1, out);
     }
 }
 
 /// Return `(effective_prefix_len, has_items)` by merging the direct schema
 /// keywords with any `items`/`prefixItems` found inside `allOf`/`anyOf`/`oneOf`
-/// branches, a sibling `$ref`, or through `$ref` chains (analogous to property
-/// collection for `unevaluatedProperties`).
+/// branches, `if`/`then`/`else`, a sibling `$ref`, or through `$ref` chains.
 ///
 /// For `allOf` all branches contribute unconditionally.  For `anyOf`/`oneOf`
-/// only branches that actually validate the instance contribute.  A sibling
-/// `$ref` is treated like an extra allOf branch.
+/// only branches that actually validate the instance contribute.  For
+/// `if`/`then`/`else`, `if` always contributes and the active branch
+/// (`then` or `else`) contributes when the condition is met or not.
+/// A sibling `$ref` is treated like an extra allOf branch.
 fn items_eval_range(
     obj: &Map<String, Value>,
     instance: &Value,
@@ -394,7 +490,14 @@ fn items_eval_range(
     // allOf: all branches must pass — include unconditionally.
     if let Some(Value::Array(branches)) = obj.get("allOf") {
         for branch in branches {
-            collect_branch_items_eval(branch, &mut branch_prefix, &mut branch_items, ctx, 0);
+            collect_branch_items_eval(
+                branch,
+                &mut branch_prefix,
+                &mut branch_items,
+                instance,
+                ctx,
+                0,
+            );
         }
     }
 
@@ -407,6 +510,7 @@ fn items_eval_range(
                         branch,
                         &mut branch_prefix,
                         &mut branch_items,
+                        instance,
                         ctx,
                         0,
                     );
@@ -415,11 +519,21 @@ fn items_eval_range(
         }
     }
 
+    // if/then/else: if always; then when condition met; else when not.
+    collect_if_then_else_items_eval(obj, instance, &mut branch_prefix, &mut branch_items, ctx);
+
     // Top-level sibling $ref: treated like an additional allOf branch.
     if let Some(Value::String(ref_uri)) = obj.get("$ref")
         && let Some(target) = crate::core::resolve_ref(ref_uri, ctx)
     {
-        collect_branch_items_eval(target, &mut branch_prefix, &mut branch_items, ctx, 0);
+        collect_branch_items_eval(
+            target,
+            &mut branch_prefix,
+            &mut branch_items,
+            instance,
+            ctx,
+            0,
+        );
     }
 
     (
@@ -428,12 +542,33 @@ fn items_eval_range(
     )
 }
 
+fn collect_if_then_else_items_eval(
+    obj: &Map<String, Value>,
+    instance: &Value,
+    max_prefix: &mut usize,
+    has_items: &mut bool,
+    ctx: &ValidationContext<'_>,
+) {
+    let Some(if_schema) = obj.get("if") else {
+        return;
+    };
+    // `if` always evaluates.
+    collect_branch_items_eval(if_schema, max_prefix, has_items, instance, ctx, 0);
+    let condition_met = validate_schema(if_schema, instance, "", ctx).is_valid();
+    let branch_key = if condition_met { "then" } else { "else" };
+    if let Some(branch) = obj.get(branch_key) {
+        collect_branch_items_eval(branch, max_prefix, has_items, instance, ctx, 0);
+    }
+}
+
 /// Recursively collect `prefixItems` length and `items` presence from a branch
-/// schema, following `$ref` and nested `allOf`, up to `MAX_BRANCH_REF_DEPTH`.
+/// schema, following `$ref`, nested `allOf`, successful `anyOf`/`oneOf`, and
+/// `if`/`then`/`else` — up to `MAX_BRANCH_REF_DEPTH`.
 fn collect_branch_items_eval(
     branch: &Value,
     max_prefix: &mut usize,
     has_items: &mut bool,
+    instance: &Value,
     ctx: &ValidationContext<'_>,
     depth: usize,
 ) {
@@ -457,13 +592,53 @@ fn collect_branch_items_eval(
     if let Some(Value::String(ref_uri)) = obj.get("$ref")
         && let Some(target) = crate::core::resolve_ref(ref_uri, ctx)
     {
-        collect_branch_items_eval(target, max_prefix, has_items, ctx, depth + 1);
+        collect_branch_items_eval(target, max_prefix, has_items, instance, ctx, depth + 1);
     }
     // Recurse into nested allOf (all branches must pass).
     if let Some(Value::Array(all_of)) = obj.get("allOf") {
         for sub in all_of {
-            collect_branch_items_eval(sub, max_prefix, has_items, ctx, depth + 1);
+            collect_branch_items_eval(sub, max_prefix, has_items, instance, ctx, depth + 1);
         }
+    }
+    collect_anyof_oneof_items_in_branch(obj, max_prefix, has_items, instance, ctx, depth);
+    collect_if_then_else_items_in_branch(obj, max_prefix, has_items, instance, ctx, depth);
+}
+
+fn collect_anyof_oneof_items_in_branch(
+    obj: &Map<String, Value>,
+    max_prefix: &mut usize,
+    has_items: &mut bool,
+    instance: &Value,
+    ctx: &ValidationContext<'_>,
+    depth: usize,
+) {
+    for applicator_key in &["anyOf", "oneOf"] {
+        if let Some(Value::Array(branches)) = obj.get(*applicator_key) {
+            for sub in branches {
+                if validate_schema(sub, instance, "", ctx).is_valid() {
+                    collect_branch_items_eval(sub, max_prefix, has_items, instance, ctx, depth + 1);
+                }
+            }
+        }
+    }
+}
+
+fn collect_if_then_else_items_in_branch(
+    obj: &Map<String, Value>,
+    max_prefix: &mut usize,
+    has_items: &mut bool,
+    instance: &Value,
+    ctx: &ValidationContext<'_>,
+    depth: usize,
+) {
+    let Some(if_schema) = obj.get("if") else {
+        return;
+    };
+    collect_branch_items_eval(if_schema, max_prefix, has_items, instance, ctx, depth + 1);
+    let condition_met = validate_schema(if_schema, instance, "", ctx).is_valid();
+    let branch_key = if condition_met { "then" } else { "else" };
+    if let Some(branch) = obj.get(branch_key) {
+        collect_branch_items_eval(branch, max_prefix, has_items, instance, ctx, depth + 1);
     }
 }
 
@@ -936,6 +1111,159 @@ mod tests {
         assert!(
             !valid(&s, &json!({"role": "editor", "extra": 1})),
             "extra property not in else must still be rejected"
+        );
+    }
+
+    // ── unevaluatedItems + if/then/else ───────────────────────────────────────
+
+    #[test]
+    fn unevaluated_items_if_then_prefix_evaluated_when_if_matches() {
+        // When `if` validates, the `then` branch's prefixItems cover the prefix.
+        let s = json!({
+            "if": {"minItems": 2},
+            "then": {"prefixItems": [{"type": "string"}, {"type": "integer"}]},
+            "unevaluatedItems": false
+        });
+        // if matches (2 items) → then applies → indices 0 and 1 are evaluated.
+        assert!(
+            valid(&s, &json!(["hello", 42])),
+            "items covered by then prefixItems must be evaluated when if matches"
+        );
+        // Index 2 is beyond the then prefix → rejected.
+        assert!(
+            !valid(&s, &json!(["hello", 42, true])),
+            "item beyond then prefixItems must be rejected"
+        );
+    }
+
+    #[test]
+    fn unevaluated_items_if_prefix_always_evaluated() {
+        // The `if` schema itself always evaluates; its prefixItems always count.
+        let s = json!({
+            "if": {"prefixItems": [{"type": "string"}]},
+            "unevaluatedItems": false
+        });
+        // Index 0 covered by if's prefixItems (if always evaluates).
+        assert!(
+            valid(&s, &json!(["hello"])),
+            "item in if prefixItems must always be evaluated"
+        );
+        // Index 1 is beyond the if prefix → rejected.
+        assert!(
+            !valid(&s, &json!(["hello", 42])),
+            "item beyond if prefixItems must be rejected"
+        );
+    }
+
+    #[test]
+    fn unevaluated_items_else_prefix_evaluated_when_if_fails() {
+        // When `if` fails, the `else` branch's prefixItems cover the prefix.
+        let s = json!({
+            "if": {"minItems": 5},
+            "else": {"prefixItems": [{"type": "string"}]},
+            "unevaluatedItems": false
+        });
+        // if fails (only 1 item) → else applies → index 0 is evaluated.
+        assert!(
+            valid(&s, &json!(["hello"])),
+            "item covered by else prefixItems must be evaluated when if fails"
+        );
+        // Index 1 is unevaluated → rejected.
+        assert!(
+            !valid(&s, &json!(["hello", 42])),
+            "item beyond else prefixItems must be rejected"
+        );
+    }
+
+    // ── unevaluatedItems + contains from anyOf/oneOf ──────────────────────────
+
+    #[test]
+    fn unevaluated_items_anyof_contains_evaluates_matching_items() {
+        // `contains` from a successful anyOf branch marks matching items as evaluated.
+        let s = json!({
+            "anyOf": [
+                {"contains": {"type": "string"}},
+                {"contains": {"type": "integer"}}
+            ],
+            "unevaluatedItems": false
+        });
+        // A string matches the contains in branch 0 (which succeeds for arrays with strings).
+        // Since the array ["hello"] validates branch 0, its contains marks "hello" as evaluated.
+        assert!(
+            valid(&s, &json!(["hello"])),
+            "item matching anyOf branch contains must be treated as evaluated"
+        );
+    }
+
+    #[test]
+    fn unevaluated_items_anyof_failed_branch_contains_not_counted() {
+        // `contains` from a *failing* anyOf branch must not mark items as evaluated.
+        // Branch 0 requires type=string (fails for arrays), branch 1 has no contains.
+        let s = json!({
+            "anyOf": [
+                {"type": "string", "contains": {"type": "integer"}},
+                {"type": "array"}
+            ],
+            "unevaluatedItems": false
+        });
+        // Branch 0 fails (not a string) → its contains must not mark any item.
+        // Branch 1 passes but has no contains.
+        // Index 0 is unevaluated → rejected.
+        assert!(
+            !valid(&s, &json!([42])),
+            "contains from a failing anyOf branch must not evaluate items"
+        );
+    }
+
+    // ── allOf → anyOf → properties ────────────────────────────────────────────
+
+    #[test]
+    fn unevaluated_properties_allof_anyof_properties_evaluated() {
+        // Properties from a successful anyOf branch nested under an allOf branch
+        // must be treated as evaluated.
+        let s = json!({
+            "allOf": [
+                {
+                    "anyOf": [
+                        {"properties": {"x": {"type": "string"}}},
+                        {"properties": {"y": {"type": "integer"}}}
+                    ]
+                }
+            ],
+            "unevaluatedProperties": false
+        });
+        // Instance {"x": "hi"} matches the first anyOf branch → x is evaluated.
+        assert!(
+            valid(&s, &json!({"x": "hi"})),
+            "property from nested anyOf branch must be evaluated"
+        );
+        // z is not in any branch → rejected.
+        assert!(
+            !valid(&s, &json!({"z": 1})),
+            "property not in any branch must be rejected"
+        );
+    }
+
+    #[test]
+    fn unevaluated_properties_allof_if_then_properties_evaluated() {
+        // Properties from if/then/else nested under allOf are evaluated.
+        let s = json!({
+            "allOf": [
+                {
+                    "if": {"required": ["kind"]},
+                    "then": {"properties": {"kind": {}, "label": {"type": "string"}}}
+                }
+            ],
+            "unevaluatedProperties": false
+        });
+        // if matches (kind present) → then applies → kind and label are evaluated.
+        assert!(
+            valid(&s, &json!({"kind": "a", "label": "b"})),
+            "properties from nested then branch must be evaluated when if matches"
+        );
+        assert!(
+            !valid(&s, &json!({"kind": "a", "label": "b", "extra": 1})),
+            "unevaluated property must still be rejected"
         );
     }
 

@@ -1,4 +1,7 @@
-//! Core vocabulary keyword processing (`$ref`, `$dynamicRef`, `$id`, `$schema`, `$defs`).
+//! Core vocabulary keyword processing (`$ref`, `$id`, `$schema`, `$defs`).
+//!
+//! `$dynamicRef` and `$dynamicAnchor` are rejected at schema-construction time
+//! by [`crate::Validator::new`] and are therefore not handled here.
 
 use std::borrow::Cow;
 
@@ -15,7 +18,6 @@ pub(crate) fn apply(
     out: &mut ValidationOutput,
 ) {
     apply_ref(obj, instance, path, ctx, out);
-    apply_dynamic_ref(obj, instance, path, ctx, out);
 }
 
 // ── $ref ─────────────────────────────────────────────────────────────────────
@@ -44,8 +46,7 @@ fn apply_ref(
 ///
 /// Fragment-only references are handled as follows:
 /// - `#` or `#/…` → resolved as a JSON Pointer against the root document.
-/// - `#name` (no leading `/` after `#`) → looked up as an anchor name, first
-///   in the `$anchor` table then in the `$dynamicAnchor` table.
+/// - `#name` (no leading `/` after `#`) → looked up in the `$anchor` table.
 ///
 /// Absolute or relative URIs are looked up in the external registry.
 /// Returns `None` when the target cannot be found, which callers treat as a
@@ -55,11 +56,8 @@ pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Opt
         if fragment.is_empty() || fragment.starts_with('/') {
             return resolve_json_pointer(ctx.root_schema, fragment);
         }
-        // Non-pointer fragment: treat as an anchor name.
-        if let Some(schema) = ctx.anchors.get(fragment) {
-            return Some(schema);
-        }
-        return ctx.dynamic_anchors.get(fragment);
+        // Non-pointer fragment: treat as a static anchor name.
+        return ctx.anchors.get(fragment);
     }
     let key = build_registry_key(ref_uri, ctx.base_uri);
     ctx.registry.get(&key)
@@ -71,38 +69,6 @@ fn build_registry_key(ref_uri: &str, base_uri: &str) -> String {
     } else {
         format!("{base_uri}{ref_uri}")
     }
-}
-
-// ── $dynamicRef ───────────────────────────────────────────────────────────────
-
-fn apply_dynamic_ref(
-    obj: &Map<String, Value>,
-    instance: &Value,
-    path: &str,
-    ctx: &ValidationContext<'_>,
-    out: &mut ValidationOutput,
-) {
-    let Some(Value::String(dyn_ref)) = obj.get("$dynamicRef") else {
-        return;
-    };
-    match resolve_dynamic_ref(dyn_ref, ctx) {
-        Some(schema) => out.merge(crate::validate_schema(schema, instance, path, ctx)),
-        None => out.merge(ValidationOutput::fail(ValidationError::new(
-            path,
-            format!("{path}/$dynamicRef"),
-            format!("unresolved $dynamicRef: `{dyn_ref}`"),
-        ))),
-    }
-}
-
-/// Resolve a `$dynamicRef`, returning a reference into the anchor table.
-///
-/// A `$dynamicRef` of the form `#anchor-name` is looked up in the root
-/// document's `$dynamicAnchor` registry.  Returns `None` for any anchor that
-/// was not declared, which callers treat as a validation failure.
-fn resolve_dynamic_ref<'a>(dyn_ref: &str, ctx: &ValidationContext<'a>) -> Option<&'a Value> {
-    let anchor = dyn_ref.strip_prefix('#')?;
-    ctx.dynamic_anchors.get(anchor)
 }
 
 // ── JSON Pointer resolution ───────────────────────────────────────────────────
@@ -185,7 +151,8 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_anchor_and_ref() {
+    fn dynamic_anchor_and_ref_rejected_at_construction() {
+        // $dynamicAnchor/$dynamicRef are unsupported; Validator::new must return Err.
         let schema = json!({
             "$defs": {
                 "Item": {
@@ -196,8 +163,10 @@ mod tests {
             "type": "array",
             "items": { "$dynamicRef": "#item" }
         });
-        assert!(valid(&schema, &json!(["a", "b"])));
-        assert!(!valid(&schema, &json!(["a", 1])));
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_err(),
+            "schema with $dynamicAnchor/$dynamicRef must fail at construction"
+        );
     }
 
     #[test]

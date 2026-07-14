@@ -43,6 +43,18 @@ pub enum SchemaError {
         /// Why it is invalid.
         reason: String,
     },
+    /// A `$anchor` name appears more than once in the schema document.
+    #[error("duplicate $anchor name: `{name}`")]
+    DuplicateAnchor {
+        /// The anchor name that appeared more than once.
+        name: String,
+    },
+    /// A keyword that is not yet supported was found in the schema.
+    #[error("unsupported keyword `{keyword}` in schema (not implemented)")]
+    UnsupportedKeyword {
+        /// The keyword name.
+        keyword: String,
+    },
 }
 
 /// Options that control how the validator is built and behaves.
@@ -116,8 +128,6 @@ pub struct Validator {
     /// Pre-loaded additional schemas keyed by their `$id`.
     registry: HashMap<String, Value>,
     formats: FormatRegistry,
-    /// `$dynamicAnchor` -> schema extracted from the root document.
-    dynamic_anchors: HashMap<String, Value>,
     /// `$anchor` -> schema extracted from the root document.
     anchors: HashMap<String, Value>,
     /// Pre-compiled regexes for every `pattern` and `patternProperties` key
@@ -130,14 +140,17 @@ impl Validator {
     ///
     /// # Errors
     ///
-    /// Returns [`SchemaError`] when the schema is invalid or contains an
-    /// invalid regular expression in a `pattern` or `patternProperties` key.
+    /// Returns [`SchemaError`] when the schema is invalid, contains an
+    /// invalid regular expression in a `pattern` or `patternProperties` key,
+    /// contains duplicate `$anchor` names, or uses an unsupported keyword
+    /// such as `$dynamicRef` or `$dynamicAnchor`.
     pub fn new(schema: &Value, options: ValidationOptions) -> Result<Self, SchemaError> {
         let mut formats = FormatRegistry::with_defaults();
         if options.assert_formats {
             formats.assert_all();
         }
-        let (anchors, dynamic_anchors) = collect_anchors(schema);
+        check_for_unsupported_keywords(schema)?;
+        let anchors = collect_anchors(schema)?;
         let mut patterns = HashMap::new();
         collect_patterns_recursive(schema, &mut patterns)?;
         Ok(Self {
@@ -145,7 +158,6 @@ impl Validator {
             options,
             registry: HashMap::new(),
             formats,
-            dynamic_anchors,
             anchors,
             patterns,
         })
@@ -159,8 +171,9 @@ impl Validator {
     /// # Errors
     ///
     /// Returns [`SchemaError`] when the added schema contains an invalid
-    /// regular expression in a `pattern` or `patternProperties` key.
+    /// regular expression, unsupported keywords, or duplicate `$anchor` names.
     pub fn add_schema(&mut self, id: impl Into<String>, schema: Value) -> Result<(), SchemaError> {
+        check_for_unsupported_keywords(&schema)?;
         collect_patterns_recursive(&schema, &mut self.patterns)?;
         self.registry.insert(id.into(), schema);
         Ok(())
@@ -176,7 +189,6 @@ impl Validator {
             formats: &self.formats,
             base_uri: &self.options.base_uri,
             root_schema: &self.schema,
-            dynamic_anchors: &self.dynamic_anchors,
             anchors: &self.anchors,
             patterns: &self.patterns,
             depth: Cell::new(0),
@@ -196,39 +208,74 @@ impl Validator {
     }
 }
 
-/// Walk the schema tree once and collect `$anchor` and `$dynamicAnchor`
-/// registries (static first in the returned pair).
-fn collect_anchors(schema: &Value) -> (HashMap<String, Value>, HashMap<String, Value>) {
-    let mut static_anchors = HashMap::new();
-    let mut dynamic_anchors = HashMap::new();
-    collect_anchors_recursive(schema, &mut static_anchors, &mut dynamic_anchors);
-    (static_anchors, dynamic_anchors)
+/// Walk the schema tree once and collect the `$anchor` registry.
+///
+/// Returns `Err(SchemaError::DuplicateAnchor)` when the same anchor name
+/// appears more than once in the document.
+fn collect_anchors(schema: &Value) -> Result<HashMap<String, Value>, SchemaError> {
+    let mut anchors = HashMap::new();
+    collect_anchors_recursive(schema, &mut anchors)?;
+    Ok(anchors)
 }
 
 fn collect_anchors_recursive(
     schema: &Value,
-    static_anchors: &mut HashMap<String, Value>,
-    dynamic_anchors: &mut HashMap<String, Value>,
-) {
+    anchors: &mut HashMap<String, Value>,
+) -> Result<(), SchemaError> {
     match schema {
         Value::Object(obj) => {
             if let Some(Value::String(name)) = obj.get("$anchor") {
-                static_anchors.insert(name.clone(), schema.clone());
-            }
-            if let Some(Value::String(name)) = obj.get("$dynamicAnchor") {
-                dynamic_anchors.insert(name.clone(), schema.clone());
+                if anchors.contains_key(name.as_str()) {
+                    return Err(SchemaError::DuplicateAnchor { name: name.clone() });
+                }
+                anchors.insert(name.clone(), schema.clone());
             }
             for value in obj.values() {
-                collect_anchors_recursive(value, static_anchors, dynamic_anchors);
+                collect_anchors_recursive(value, anchors)?;
             }
+            Ok(())
         }
         Value::Array(arr) => {
             for item in arr {
-                collect_anchors_recursive(item, static_anchors, dynamic_anchors);
+                collect_anchors_recursive(item, anchors)?;
             }
+            Ok(())
         }
-        _ => {}
+        _ => Ok(()),
     }
+}
+
+/// Reject schemas that contain keywords not yet supported by this validator.
+///
+/// Currently rejects `$dynamicRef` and `$dynamicAnchor` because dynamic-scope
+/// resolution requires per-instance call-stack tracking that has not been
+/// implemented.  Callers receive [`SchemaError::UnsupportedKeyword`] so they
+/// can surface a clear error rather than silently producing wrong results.
+fn check_for_unsupported_keywords(schema: &Value) -> Result<(), SchemaError> {
+    match schema {
+        Value::Object(obj) => check_unsupported_in_object(obj),
+        Value::Array(arr) => {
+            for item in arr {
+                check_for_unsupported_keywords(item)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn check_unsupported_in_object(obj: &Map<String, Value>) -> Result<(), SchemaError> {
+    for keyword in &["$dynamicRef", "$dynamicAnchor"] {
+        if obj.contains_key(*keyword) {
+            return Err(SchemaError::UnsupportedKeyword {
+                keyword: (*keyword).to_owned(),
+            });
+        }
+    }
+    for value in obj.values() {
+        check_for_unsupported_keywords(value)?;
+    }
+    Ok(())
 }
 
 /// Walk the schema tree and precompile every regex found in `pattern` and
@@ -307,8 +354,6 @@ pub(crate) struct ValidationContext<'a> {
     pub(crate) base_uri: &'a str,
     /// The root schema document (used for local `$ref` JSON Pointer resolution).
     pub(crate) root_schema: &'a Value,
-    /// Pre-computed `$dynamicAnchor` registry for the root document.
-    pub(crate) dynamic_anchors: &'a HashMap<String, Value>,
     /// Pre-computed `$anchor` registry for the root document.
     pub(crate) anchors: &'a HashMap<String, Value>,
     /// Pre-compiled regexes keyed by pattern string.
@@ -561,7 +606,9 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_anchor_and_ref() {
+    fn dynamic_anchor_and_ref_rejected_at_construction() {
+        // $dynamicAnchor and $dynamicRef are not implemented: Validator::new
+        // must return Err rather than silently producing wrong results.
         let schema = json!({
             "$defs": {
                 "Item": {
@@ -572,8 +619,10 @@ mod tests {
             "type": "array",
             "items": { "$dynamicRef": "#item" }
         });
-        assert!(valid(&schema, &json!(["a", "b"])));
-        assert!(!valid(&schema, &json!(["a", 1])));
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_err(),
+            "schema with $dynamicAnchor/$dynamicRef must fail at construction"
+        );
     }
 
     fn assert_no_panic(schema: &Value, instance: &Value) {
@@ -659,10 +708,14 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_dynamic_ref_fails_validation() {
+    fn dynamic_ref_rejected_at_construction() {
+        // A schema with only $dynamicRef (no $dynamicAnchor) must also fail at
+        // construction because $dynamicRef is unsupported.
         let schema = json!({"$dynamicRef": "#missing-anchor"});
-        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
-        assert!(!v.validate(&json!("anything")).is_valid());
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_err(),
+            "schema with $dynamicRef must fail at construction"
+        );
     }
 
     // ── Recursion / cycle guards ──────────────────────────────────────────────
@@ -828,6 +881,70 @@ mod tests {
         assert!(
             v.add_schema("urn:bad", bad).is_err(),
             "add_schema should fail on invalid pattern"
+        );
+    }
+
+    // ── $anchor collision ─────────────────────────────────────────────────────
+
+    #[test]
+    fn duplicate_anchor_rejected_at_construction() {
+        // Two schemas with the same $anchor name must cause Validator::new to
+        // return SchemaError::DuplicateAnchor.
+        let schema = json!({
+            "$defs": {
+                "A": {"$anchor": "shared", "type": "string"},
+                "B": {"$anchor": "shared", "type": "integer"}
+            }
+        });
+        let result = Validator::new(&schema, ValidationOptions::default());
+        assert!(
+            result.is_err(),
+            "duplicate $anchor names must be rejected at construction"
+        );
+        let err = result.err().expect("already checked is_err");
+        match err {
+            SchemaError::DuplicateAnchor { name } => assert_eq!(name, "shared"),
+            other => panic!("expected DuplicateAnchor, got {other}"),
+        }
+    }
+
+    #[test]
+    fn unique_anchors_accepted() {
+        let schema = json!({
+            "$defs": {
+                "A": {"$anchor": "alpha", "type": "string"},
+                "B": {"$anchor": "beta", "type": "integer"}
+            }
+        });
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_ok(),
+            "unique $anchor names must be accepted"
+        );
+    }
+
+    // ── $dynamicRef / $dynamicAnchor unsupported ──────────────────────────────
+
+    #[test]
+    fn dynamic_anchor_alone_rejected_at_construction() {
+        let schema = json!({"$dynamicAnchor": "root", "type": "object"});
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_err(),
+            "schema with $dynamicAnchor must fail at construction"
+        );
+    }
+
+    #[test]
+    fn dynamic_ref_nested_rejected_at_construction() {
+        // $dynamicRef nested inside $defs must still be caught.
+        let schema = json!({
+            "$defs": {
+                "Leaf": {"$dynamicRef": "#root"}
+            },
+            "type": "object"
+        });
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_err(),
+            "nested $dynamicRef must be rejected at construction"
         );
     }
 }
