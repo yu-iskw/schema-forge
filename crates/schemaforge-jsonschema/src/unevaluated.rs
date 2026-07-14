@@ -180,17 +180,21 @@ fn applicator_branch_evaluated_properties(
     for_each_child_schema(obj, instance, ctx, |branch| {
         collect_branch_props_depth(branch, instance, &mut evaluated, ctx, 0);
     });
-    collect_dependent_schemas_props(obj, instance, ctx, &mut evaluated);
+    collect_dependent_schemas_props(obj, instance, ctx, &mut evaluated, 0);
     evaluated
 }
 
 /// Collect property names from `dependentSchemas` entries whose trigger
 /// property is present in `instance`.
+///
+/// `depth` continues the surrounding branch-walk budget so nested
+/// `dependentSchemas` cannot reset [`MAX_BRANCH_REF_DEPTH`].
 fn collect_dependent_schemas_props(
     obj: &Map<String, Value>,
     instance: &Value,
     ctx: &ValidationContext<'_>,
     evaluated: &mut HashSet<String>,
+    depth: usize,
 ) {
     let (Some(Value::Object(dep_schemas)), Value::Object(inst)) =
         (obj.get("dependentSchemas"), instance)
@@ -199,7 +203,7 @@ fn collect_dependent_schemas_props(
     };
     for (trigger, dep_schema) in dep_schemas {
         if inst.contains_key(trigger) {
-            collect_branch_props_depth(dep_schema, instance, evaluated, ctx, 0);
+            collect_branch_props_depth(dep_schema, instance, evaluated, ctx, depth);
         }
     }
 }
@@ -219,10 +223,8 @@ fn collect_branch_props_depth(
         return;
     };
     collect_props_from_obj(obj, instance, evaluated, ctx);
-    // `dependentSchemas` nested inside an applicator branch (e.g. inside allOf
-    // or the target of a $ref) must also contribute their declared properties
-    // when their trigger key is present in the instance.
-    collect_dependent_schemas_props(obj, instance, ctx, evaluated);
+    // Nested `dependentSchemas` (e.g. under allOf / $ref) contribute when triggered.
+    collect_dependent_schemas_props(obj, instance, ctx, evaluated, depth + 1);
     for_each_child_schema(obj, instance, ctx, |sub| {
         collect_branch_props_depth(sub, instance, evaluated, ctx, depth + 1);
     });

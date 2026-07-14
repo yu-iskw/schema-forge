@@ -1,7 +1,8 @@
 //! Core vocabulary keyword processing (`$ref`, `$id`, `$schema`, `$defs`).
 //!
-//! `$dynamicRef` and `$dynamicAnchor` are rejected at schema-construction time
-//! by [`crate::Validator::new`] and are therefore not handled here.
+//! `$dynamicRef`, `$dynamicAnchor`, `$recursiveRef`, `$recursiveAnchor`, and
+//! `dependencies` are rejected at schema-construction time by
+//! [`crate::Validator::new`] and are therefore not handled here.
 
 use std::borrow::Cow;
 

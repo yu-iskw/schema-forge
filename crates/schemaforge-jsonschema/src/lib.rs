@@ -143,7 +143,7 @@ impl Validator {
     /// Returns [`SchemaError`] when the schema is invalid, contains an
     /// invalid regular expression in a `pattern` or `patternProperties` key,
     /// contains duplicate `$anchor` names, or uses an unsupported keyword
-    /// such as `$dynamicRef` or `$dynamicAnchor`.
+    /// such as `$dynamicRef`, `$recursiveRef`, or `dependencies`.
     pub fn new(schema: &Value, options: ValidationOptions) -> Result<Self, SchemaError> {
         let mut formats = FormatRegistry::with_defaults();
         if options.assert_formats {
@@ -245,12 +245,20 @@ fn collect_anchors_recursive(
     }
 }
 
-/// Reject schemas that contain keywords not yet supported by this validator.
+/// Keywords rejected at construction because their semantics are not yet
+/// implemented (dynamic/recursive refs, legacy `dependencies`).
 ///
-/// Currently rejects `$dynamicRef` and `$dynamicAnchor` because dynamic-scope
-/// resolution requires per-instance call-stack tracking that has not been
-/// implemented.  Callers receive [`SchemaError::UnsupportedKeyword`] so they
-/// can surface a clear error rather than silently producing wrong results.
+/// Callers receive [`SchemaError::UnsupportedKeyword`] rather than silently
+/// wrong validation results.
+const UNSUPPORTED_KEYWORDS: &[&str] = &[
+    "$dynamicRef",
+    "$dynamicAnchor",
+    "$recursiveRef",
+    "$recursiveAnchor",
+    "dependencies",
+];
+
+/// Reject schemas that contain keywords not yet supported by this validator.
 fn check_for_unsupported_keywords(schema: &Value) -> Result<(), SchemaError> {
     match schema {
         Value::Object(obj) => check_unsupported_in_object(obj),
@@ -265,22 +273,10 @@ fn check_for_unsupported_keywords(schema: &Value) -> Result<(), SchemaError> {
 }
 
 fn check_unsupported_in_object(obj: &Map<String, Value>) -> Result<(), SchemaError> {
-    for keyword in &[
-        "$dynamicRef",
-        "$dynamicAnchor",
-        // Draft 2019-09 recursive reference applicators — runtime anchor-resolution
-        // semantics not yet implemented; reject explicitly rather than producing
-        // silently wrong results.
-        "$recursiveRef",
-        "$recursiveAnchor",
-        // Legacy Draft 4 / Draft 7 property-dependency keyword.  It conflates
-        // property-presence-implies-required and property-presence-implies-schema,
-        // neither of which is yet represented in this validator.
-        "dependencies",
-    ] {
-        if obj.contains_key(*keyword) {
+    for &keyword in UNSUPPORTED_KEYWORDS {
+        if obj.contains_key(keyword) {
             return Err(SchemaError::UnsupportedKeyword {
-                keyword: (*keyword).to_owned(),
+                keyword: keyword.to_owned(),
             });
         }
     }
