@@ -1,7 +1,6 @@
 //! Validation vocabulary: `type`, `enum`, `const`, numeric/string/array/object
 //! constraints, `required`, `dependentRequired`, and `format`.
 
-use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::{ValidationContext, ValidationError, ValidationOutput};
@@ -143,15 +142,23 @@ fn apply_string_constraints(
             format!("string length {char_count} > maxLength {max}"),
         )));
     }
-    apply_pattern(obj, s, path, out);
+    apply_pattern(obj, s, path, ctx, out);
     apply_format(obj, s, path, ctx, out);
 }
 
-fn apply_pattern(obj: &Map<String, Value>, s: &str, path: &str, out: &mut ValidationOutput) {
+fn apply_pattern(
+    obj: &Map<String, Value>,
+    s: &str,
+    path: &str,
+    ctx: &ValidationContext<'_>,
+    out: &mut ValidationOutput,
+) {
     let Some(Value::String(pattern)) = obj.get("pattern") else {
         return;
     };
-    let Ok(re) = Regex::new(pattern) else { return };
+    let Some(re) = ctx.patterns.get(pattern.as_str()) else {
+        return;
+    };
     if !re.is_match(s) {
         out.merge(ValidationOutput::fail(ValidationError::new(
             path,

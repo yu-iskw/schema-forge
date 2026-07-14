@@ -1,8 +1,10 @@
 //! Core vocabulary keyword processing (`$ref`, `$dynamicRef`, `$id`, `$schema`, `$defs`).
 
+use std::borrow::Cow;
+
 use serde_json::{Map, Value};
 
-use crate::{ValidationContext, ValidationOutput};
+use crate::{ValidationContext, ValidationError, ValidationOutput};
 
 /// Apply core vocabulary keywords from `obj` to `instance`.
 pub(crate) fn apply(
@@ -28,23 +30,28 @@ fn apply_ref(
     let Some(Value::String(ref_uri)) = obj.get("$ref") else {
         return;
     };
-    if let Some(schema) = resolve_ref(ref_uri, ctx) {
-        let result = crate::validate_schema(&schema, instance, path, ctx);
-        out.merge(result);
+    match resolve_ref(ref_uri, ctx) {
+        Some(schema) => out.merge(crate::validate_schema(schema, instance, path, ctx)),
+        None => out.merge(ValidationOutput::fail(ValidationError::new(
+            path,
+            format!("{path}/$ref"),
+            format!("unresolved $ref: `{ref_uri}`"),
+        ))),
     }
 }
 
-/// Resolve a `$ref` URI.
+/// Resolve a `$ref` URI, returning a reference into the schema tree.
 ///
 /// Fragment-only references (e.g. `#`, `#/$defs/Foo`) are resolved as JSON
 /// Pointers against the root schema document.  Absolute or relative URIs are
-/// looked up in the external registry.
-fn resolve_ref(ref_uri: &str, ctx: &ValidationContext<'_>) -> Option<Value> {
+/// looked up in the external registry.  Returns `None` when the target cannot
+/// be found, which callers treat as a validation failure.
+fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Option<&'a Value> {
     if let Some(pointer) = ref_uri.strip_prefix('#') {
-        return resolve_json_pointer(ctx.root_schema, pointer).cloned();
+        return resolve_json_pointer(ctx.root_schema, pointer);
     }
     let key = build_registry_key(ref_uri, ctx.base_uri);
-    ctx.registry.get(&key).cloned()
+    ctx.registry.get(&key)
 }
 
 fn build_registry_key(ref_uri: &str, base_uri: &str) -> String {
@@ -67,19 +74,24 @@ fn apply_dynamic_ref(
     let Some(Value::String(dyn_ref)) = obj.get("$dynamicRef") else {
         return;
     };
-    if let Some(schema) = resolve_dynamic_ref(dyn_ref, ctx) {
-        out.merge(crate::validate_schema(&schema, instance, path, ctx));
+    match resolve_dynamic_ref(dyn_ref, ctx) {
+        Some(schema) => out.merge(crate::validate_schema(schema, instance, path, ctx)),
+        None => out.merge(ValidationOutput::fail(ValidationError::new(
+            path,
+            format!("{path}/$dynamicRef"),
+            format!("unresolved $dynamicRef: `{dyn_ref}`"),
+        ))),
     }
 }
 
-/// Resolve a `$dynamicRef`.
+/// Resolve a `$dynamicRef`, returning a reference into the anchor table.
 ///
 /// A `$dynamicRef` of the form `#anchor-name` is looked up in the root
-/// document's `$dynamicAnchor` registry.  This is a simplified single-document
-/// implementation; cross-document dynamic scope resolution is not yet supported.
-fn resolve_dynamic_ref(dyn_ref: &str, ctx: &ValidationContext<'_>) -> Option<Value> {
+/// document's `$dynamicAnchor` registry.  Returns `None` for any anchor that
+/// was not declared, which callers treat as a validation failure.
+fn resolve_dynamic_ref<'a>(dyn_ref: &str, ctx: &ValidationContext<'a>) -> Option<&'a Value> {
     let anchor = dyn_ref.strip_prefix('#')?;
-    ctx.dynamic_anchors.get(anchor).cloned()
+    ctx.dynamic_anchors.get(anchor)
 }
 
 // ── JSON Pointer resolution ───────────────────────────────────────────────────
@@ -112,8 +124,15 @@ fn descend<'a>(node: &'a Value, token: &str) -> Option<&'a Value> {
     }
 }
 
-fn unescape_token(token: &str) -> String {
-    token.replace("~1", "/").replace("~0", "~")
+/// Unescape a JSON Pointer token (RFC 6901 §3).
+///
+/// Uses a `Borrowed` fast-path when the token contains no `~`, avoiding any
+/// heap allocation for the common case.
+fn unescape_token(token: &str) -> Cow<'_, str> {
+    if !token.contains('~') {
+        return Cow::Borrowed(token);
+    }
+    Cow::Owned(token.replace("~1", "/").replace("~0", "~"))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -187,5 +206,24 @@ mod tests {
         });
         assert!(valid(&schema, &json!({"home": {"city": "Berlin"}})));
         assert!(!valid(&schema, &json!({"home": {"city": 42}})));
+    }
+
+    #[test]
+    fn unescape_token_no_tilde_is_borrowed() {
+        let t = unescape_token("simple");
+        assert!(matches!(t, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn unescape_token_with_tilde_is_owned() {
+        let t = unescape_token("a~1b");
+        assert_eq!(&*t, "a/b");
+        assert!(matches!(t, Cow::Owned(_)));
+    }
+
+    #[test]
+    fn unescape_token_tilde_zero() {
+        let t = unescape_token("a~0b");
+        assert_eq!(&*t, "a~b");
     }
 }

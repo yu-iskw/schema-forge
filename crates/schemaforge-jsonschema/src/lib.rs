@@ -20,9 +20,9 @@ pub(crate) mod validation;
 
 use std::collections::HashMap;
 
+use regex::Regex;
 use schemaforge_formats::FormatRegistry;
-use schemaforge_resolver::{OfflineResolver, ResolveError, Resolver};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use thiserror::Error;
 
 /// Error returned when a schema cannot be compiled.
@@ -31,14 +31,6 @@ pub enum SchemaError {
     /// The schema JSON is malformed.
     #[error("schema parse error: {0}")]
     ParseError(String),
-    /// A `$ref` or `$dynamicRef` could not be resolved.
-    #[error("unresolved reference `{uri}`: {source}")]
-    UnresolvedRef {
-        /// The unresolvable URI.
-        uri: String,
-        /// The underlying resolve error.
-        source: ResolveError,
-    },
     /// An unsupported or invalid keyword value was encountered.
     #[error("invalid schema keyword `{keyword}`: {reason}")]
     InvalidKeyword {
@@ -61,37 +53,28 @@ pub struct ValidationOptions {
 /// The result of validating a single instance against a schema.
 #[derive(Debug, Clone)]
 pub struct ValidationOutput {
-    /// Whether the instance is valid.
-    pub valid: bool,
     /// All validation errors, if any.
     pub errors: Vec<ValidationError>,
 }
 
 impl ValidationOutput {
-    /// Returns `true` when the instance is valid.
+    /// Returns `true` when the instance is valid (no errors).
     #[must_use]
     pub const fn is_valid(&self) -> bool {
-        self.valid
+        self.errors.is_empty()
     }
 
     /// Merge another output into this one (used for composing applicators).
     pub(crate) fn merge(&mut self, other: Self) {
-        if !other.valid {
-            self.valid = false;
-            self.errors.extend(other.errors);
-        }
+        self.errors.extend(other.errors);
     }
 
     pub(crate) const fn ok() -> Self {
-        Self {
-            valid: true,
-            errors: Vec::new(),
-        }
+        Self { errors: Vec::new() }
     }
 
     pub(crate) fn fail(error: ValidationError) -> Self {
         Self {
-            valid: false,
             errors: vec![error],
         }
     }
@@ -131,6 +114,9 @@ pub struct Validator {
     formats: FormatRegistry,
     /// `$dynamicAnchor` -> schema extracted from the root document.
     dynamic_anchors: HashMap<String, Value>,
+    /// Pre-compiled regexes for every `pattern` and `patternProperties` key
+    /// found in the schema tree.  Keyed by the raw pattern string.
+    patterns: HashMap<String, Regex>,
 }
 
 impl Validator {
@@ -140,35 +126,29 @@ impl Validator {
     ///
     /// Returns [`SchemaError`] when the schema is invalid.
     pub fn new(schema: &Value, options: ValidationOptions) -> Result<Self, SchemaError> {
-        Self::with_resolver(schema, options, &OfflineResolver::new())
-    }
-
-    /// Compile with a custom resolver for `$ref` resolution.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchemaError`] when the schema is invalid.
-    pub fn with_resolver(
-        schema: &Value,
-        options: ValidationOptions,
-        _resolver: &dyn Resolver,
-    ) -> Result<Self, SchemaError> {
         let mut formats = FormatRegistry::with_defaults();
         if options.assert_formats {
             formats.assert_all();
         }
         let dynamic_anchors = collect_dynamic_anchors(schema);
+        let mut patterns = HashMap::new();
+        collect_patterns_recursive(schema, &mut patterns);
         Ok(Self {
             schema: schema.clone(),
             options,
             registry: HashMap::new(),
             formats,
             dynamic_anchors,
+            patterns,
         })
     }
 
     /// Add an additional schema to the validator's internal registry.
+    ///
+    /// Patterns from the added schema are precompiled and merged into the
+    /// validator's pattern cache so they are available during validation.
     pub fn add_schema(&mut self, id: impl Into<String>, schema: Value) {
+        collect_patterns_recursive(&schema, &mut self.patterns);
         self.registry.insert(id.into(), schema);
     }
 
@@ -183,6 +163,7 @@ impl Validator {
             base_uri: &self.options.base_uri,
             root_schema: &self.schema,
             dynamic_anchors: &self.dynamic_anchors,
+            patterns: &self.patterns,
         };
         validate_schema(&self.schema, instance, "", &ctx)
     }
@@ -226,15 +207,53 @@ fn collect_anchors_recursive(schema: &Value, anchors: &mut HashMap<String, Value
     }
 }
 
+/// Walk the schema tree and precompile every regex found in `pattern` and
+/// `patternProperties` keys, storing them in `map` keyed by pattern string.
+fn collect_patterns_recursive(schema: &Value, map: &mut HashMap<String, Regex>) {
+    match schema {
+        Value::Object(obj) => collect_patterns_from_object(obj, map),
+        Value::Array(arr) => {
+            for item in arr {
+                collect_patterns_recursive(item, map);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_patterns_from_object(obj: &Map<String, Value>, map: &mut HashMap<String, Regex>) {
+    register_pattern(obj.get("pattern").and_then(Value::as_str), map);
+    if let Some(pp) = obj.get("patternProperties").and_then(Value::as_object) {
+        for k in pp.keys() {
+            register_pattern(Some(k.as_str()), map);
+        }
+    }
+    for v in obj.values() {
+        collect_patterns_recursive(v, map);
+    }
+}
+
+fn register_pattern(pattern: Option<&str>, map: &mut HashMap<String, Regex>) {
+    let Some(p) = pattern else { return };
+    if map.contains_key(p) {
+        return;
+    }
+    if let Ok(re) = Regex::new(p) {
+        map.insert(p.to_owned(), re);
+    }
+}
+
 /// Shared context passed through recursive validation calls.
 pub(crate) struct ValidationContext<'a> {
-    registry: &'a HashMap<String, Value>,
-    formats: &'a FormatRegistry,
-    base_uri: &'a str,
+    pub(crate) registry: &'a HashMap<String, Value>,
+    pub(crate) formats: &'a FormatRegistry,
+    pub(crate) base_uri: &'a str,
     /// The root schema document (used for local `$ref` JSON Pointer resolution).
-    root_schema: &'a Value,
+    pub(crate) root_schema: &'a Value,
     /// Pre-computed `$dynamicAnchor` registry for the root document.
-    dynamic_anchors: &'a HashMap<String, Value>,
+    pub(crate) dynamic_anchors: &'a HashMap<String, Value>,
+    /// Pre-compiled regexes keyed by pattern string.
+    pub(crate) patterns: &'a HashMap<String, Regex>,
 }
 
 /// Validate `instance` against `schema` at `path`.
@@ -551,5 +570,19 @@ mod tests {
         for s in ["not json at all", "{unclosed", "NaN"] {
             let _ = v.validate_str(s);
         }
+    }
+
+    #[test]
+    fn unresolved_ref_fails_validation() {
+        let schema = json!({"$ref": "https://example.com/missing-schema"});
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        assert!(!v.validate(&json!("anything")).is_valid());
+    }
+
+    #[test]
+    fn unresolved_dynamic_ref_fails_validation() {
+        let schema = json!({"$dynamicRef": "#missing-anchor"});
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        assert!(!v.validate(&json!("anything")).is_valid());
     }
 }

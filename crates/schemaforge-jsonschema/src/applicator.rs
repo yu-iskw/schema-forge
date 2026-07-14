@@ -2,7 +2,6 @@
 //! `properties`, `patternProperties`, `additionalProperties`, `propertyNames`,
 //! `dependentSchemas`, `items`, `prefixItems`, `contains`.
 
-use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::{ValidationContext, ValidationError, ValidationOutput, validate_schema};
@@ -161,7 +160,7 @@ fn apply_pattern_properties(
         return;
     };
     for (pattern, schema) in pat_props {
-        let Ok(re) = Regex::new(pattern) else {
+        let Some(re) = ctx.patterns.get(pattern.as_str()) else {
             continue;
         };
         for (key, value) in inst {
@@ -184,13 +183,12 @@ fn apply_additional_properties(
         return;
     };
     let known_props = collect_known_property_names(obj);
-    let pattern_props = collect_pattern_property_regexes(obj);
 
     for (key, value) in inst {
         if known_props.contains(&key.as_str()) {
             continue;
         }
-        if pattern_props.iter().any(|re| re.is_match(key)) {
+        if matches_any_pattern_property(obj, key, ctx) {
             continue;
         }
         let prop_path = format!("{path}/{key}");
@@ -205,11 +203,20 @@ fn collect_known_property_names(obj: &Map<String, Value>) -> Vec<&str> {
         .unwrap_or_default()
 }
 
-fn collect_pattern_property_regexes(obj: &Map<String, Value>) -> Vec<Regex> {
-    obj.get("patternProperties")
-        .and_then(Value::as_object)
-        .map(|pp| pp.keys().filter_map(|k| Regex::new(k).ok()).collect())
-        .unwrap_or_default()
+/// Returns `true` when `key` matches any pattern in `patternProperties`.
+fn matches_any_pattern_property(
+    obj: &Map<String, Value>,
+    key: &str,
+    ctx: &ValidationContext<'_>,
+) -> bool {
+    let Some(Value::Object(pp)) = obj.get("patternProperties") else {
+        return false;
+    };
+    pp.keys().any(|pat| {
+        ctx.patterns
+            .get(pat.as_str())
+            .is_some_and(|re| re.is_match(key))
+    })
 }
 
 /// `propertyNames` - each key in an object must satisfy the given schema.
