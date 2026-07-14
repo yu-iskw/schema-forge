@@ -521,13 +521,13 @@ fn file_ext(path: &Path) -> &str {
 }
 
 fn write_or_print(output: Option<&Path>, content: &str) -> Result<(), CliError> {
-    match output {
-        Some(path) => std::fs::write(path, content).map_err(CliError::Io),
-        None => {
+    output.map_or_else(
+        || {
             print!("{content}");
             Ok(())
-        }
-    }
+        },
+        |path| std::fs::write(path, content).map_err(CliError::Io),
+    )
 }
 
 fn parse_json(text: &str) -> Result<serde_json::Value, CliError> {
