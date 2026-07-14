@@ -101,13 +101,20 @@ fn apply_not(
     let Some(not_schema) = obj.get("not") else {
         return;
     };
-    if validate_schema(not_schema, instance, path, ctx).is_valid() {
+    let not_out = validate_schema(not_schema, instance, path, ctx);
+    if not_out.aborted {
+        // An aborted sub-schema (e.g. unresolved $ref) cannot be inverted;
+        // propagate the abort so callers know the result is unreliable.
+        out.merge(not_out);
+    } else if not_out.is_valid() {
+        // The sub-schema passed, so `not` must fail.
         out.merge(ValidationOutput::fail(ValidationError::new(
             path,
             format!("{path}/not"),
             "instance must not match the `not` schema",
         )));
     }
+    // Sub-schema failed normally → `not` passes; nothing to add.
 }
 
 fn apply_if_then_else(
@@ -120,8 +127,14 @@ fn apply_if_then_else(
     let Some(if_schema) = obj.get("if") else {
         return;
     };
-    let condition_met = validate_schema(if_schema, instance, path, ctx).is_valid();
-    if condition_met {
+    let cond_out = validate_schema(if_schema, instance, path, ctx);
+    if cond_out.aborted {
+        // An aborted condition (e.g. unresolved $ref) makes the branch
+        // indeterminate; propagate the abort rather than choosing then/else.
+        out.merge(cond_out);
+        return;
+    }
+    if cond_out.is_valid() {
         if let Some(then_schema) = obj.get("then") {
             out.merge(validate_schema(then_schema, instance, path, ctx));
         }

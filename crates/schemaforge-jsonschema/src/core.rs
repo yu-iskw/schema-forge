@@ -33,7 +33,7 @@ fn apply_ref(
     };
     match resolve_ref(ref_uri, ctx) {
         Some(schema) => out.merge(crate::validate_schema(schema, instance, path, ctx)),
-        None => out.merge(ValidationOutput::fail(ValidationError::new(
+        None => out.merge(ValidationOutput::abort(ValidationError::new(
             path,
             format!("{path}/$ref"),
             format!("unresolved $ref: `{ref_uri}`"),

@@ -114,10 +114,13 @@ fn load_from_path(
     }
 
     // Open the file to obtain a stable file descriptor before reading.
-    // This narrows the TOCTOU window: a symlink created between the initial
-    // jail check and open will be resolved by the OS at open time, and then
-    // caught by the re-canonicalize check below before any bytes are read.
-    let file = std::fs::File::open(&path).map_err(|e| ResolveError::IoError {
+    // On Unix the open uses O_NONBLOCK so that if an attacker replaces a
+    // regular file with a FIFO between the pre-open stat and open(2), the
+    // open returns immediately instead of blocking.  The subsequent fstat
+    // (file.metadata() below) then detects the FIFO type and rejects it.
+    // On non-Unix platforms the plain open is used; the pre-open stat
+    // already rejects FIFOs on those targets.
+    let file = open_non_blocking(&path).map_err(|e| ResolveError::IoError {
         uri: uri.to_owned(),
         reason: e.to_string(),
     })?;
@@ -188,6 +191,25 @@ fn load_from_path(
         uri: uri.to_owned(),
         reason: e.to_string(),
     })
+}
+
+/// Open a path for reading, using `O_NONBLOCK` on Unix to avoid blocking on
+/// FIFOs or other special files in case the filesystem was modified between the
+/// pre-open `metadata()` check and this call (TOCTOU).  On non-Unix targets
+/// falls back to a plain `File::open`.
+fn open_non_blocking(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::File::open(path)
+    }
 }
 
 /// Canonicalize the real path of an already-open file.

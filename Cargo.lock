@@ -789,6 +789,7 @@ dependencies = [
 name = "schemaforge-resolver"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "schemaforge-dialect",
  "serde",
  "serde_json",

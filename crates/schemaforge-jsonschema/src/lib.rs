@@ -72,27 +72,46 @@ pub struct ValidationOptions {
 pub struct ValidationOutput {
     /// All validation errors, if any.
     pub errors: Vec<ValidationError>,
+    /// When `true` the validation was aborted due to an unrecoverable error
+    /// such as an unresolved `$ref`.  An aborted output is never valid.
+    /// Applicators like `not` and `if` must not invert an aborted result.
+    pub aborted: bool,
 }
 
 impl ValidationOutput {
-    /// Returns `true` when the instance is valid (no errors).
+    /// Returns `true` when the instance is valid (no errors and not aborted).
     #[must_use]
     pub const fn is_valid(&self) -> bool {
-        self.errors.is_empty()
+        self.errors.is_empty() && !self.aborted
     }
 
     /// Merge another output into this one (used for composing applicators).
     pub(crate) fn merge(&mut self, other: Self) {
         self.errors.extend(other.errors);
+        self.aborted |= other.aborted;
     }
 
     pub(crate) const fn ok() -> Self {
-        Self { errors: Vec::new() }
+        Self {
+            errors: Vec::new(),
+            aborted: false,
+        }
     }
 
     pub(crate) fn fail(error: ValidationError) -> Self {
         Self {
             errors: vec![error],
+            aborted: false,
+        }
+    }
+
+    /// Create an aborted output caused by an unrecoverable schema error (e.g.
+    /// an unresolved `$ref`).  Aborted outputs are never valid and must not be
+    /// inverted by `not` or used as a condition in `if/then/else`.
+    pub(crate) fn abort(error: ValidationError) -> Self {
+        Self {
+            errors: vec![error],
+            aborted: true,
         }
     }
 }
@@ -728,6 +747,49 @@ mod tests {
         let schema = json!({"$ref": "https://example.com/missing-schema"});
         let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
         assert!(!v.validate(&json!("anything")).is_valid());
+    }
+
+    // ── Abort propagation: not / if must not invert an unresolved $ref ────────
+
+    #[test]
+    fn not_with_unresolved_ref_is_invalid_not_valid() {
+        // `not` must not invert an aborted (unresolved $ref) result.
+        // Without abort propagation this would wrongly return true because
+        // the unresolved ref "fails" and `not` would invert that to "pass".
+        let schema = json!({"not": {"$ref": "#/$defs/Missing"}});
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&json!("anything"));
+        assert!(
+            !out.is_valid(),
+            "not{{unresolved $ref}} must be invalid, not silently pass"
+        );
+        assert!(
+            out.aborted,
+            "abort flag must propagate through `not` when the sub-schema aborts"
+        );
+    }
+
+    #[test]
+    fn if_with_unresolved_ref_aborts_for_any_instance() {
+        // An unresolved $ref inside `if` makes the condition indeterminate.
+        // Both `then` and `else` must be skipped; the abort must propagate.
+        let schema = json!({
+            "if":   {"$ref": "#/$defs/Missing"},
+            "then": {"type": "string"},
+            "else": {"type": "integer"}
+        });
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        for instance in [json!("hello"), json!(42), json!(null)] {
+            let out = v.validate(&instance);
+            assert!(
+                !out.is_valid(),
+                "if{{unresolved $ref}} must be invalid for any instance (got {instance:?})"
+            );
+            assert!(
+                out.aborted,
+                "abort flag must propagate when the `if` condition aborts (instance {instance:?})"
+            );
+        }
     }
 
     #[test]

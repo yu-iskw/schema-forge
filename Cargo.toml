@@ -24,6 +24,9 @@ serde-saphyr = "0.0.29"
 # URI
 fluent-uri = "0.4"
 
+# OS / syscall constants (Unix only)
+libc = "0.2"
+
 # Hashing / crypto
 sha2 = "0.10"
 
