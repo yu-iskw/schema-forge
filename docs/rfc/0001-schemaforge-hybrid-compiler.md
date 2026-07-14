@@ -1,11 +1,11 @@
 # RFC 0001 — SchemaForge Hybrid Schema Compiler
 
-| Field       | Value                                      |
-|-------------|---------------------------------------------|
-| Status      | Accepted                                    |
-| Authors     | SchemaForge team                            |
-| Created     | 2025-01-01                                  |
-| Last update | 2026-07-14                                  |
+| Field       | Value            |
+| ----------- | ---------------- |
+| Status      | Accepted         |
+| Authors     | SchemaForge team |
+| Created     | 2025-01-01       |
+| Last update | 2026-07-14       |
 
 ---
 
@@ -14,8 +14,8 @@
 SchemaForge is a Rust workspace that compiles JSON Schema documents into a
 **Canonical Semantic IR** and then emits either native Rust validation code
 (ahead-of-time path) or a compact serialisable **Runtime Plan** (interpreted
-path).  The two paths share the same front-end and IR, so behaviour is
-identical across outputs.  This document describes the architecture,
+path). The two paths share the same front-end and IR, so behaviour is
+identical across outputs. This document describes the architecture,
 eight delivery phases, security stance, and dialect strategy.
 
 ---
@@ -61,7 +61,7 @@ on the hot path, and support multiple dialects through a common IR.
 
 ## 4. Architecture Overview
 
-```
+```text
   ┌──────────────────────────────────────────────────────┐
   │                   Source layer                        │
   │  schemaforge-source  ·  schemaforge-diagnostics       │
@@ -105,7 +105,7 @@ allowed to depend on all others.
 ## 5. Canonical Semantic IR
 
 The IR (`schemaforge-ir`) is a typed Rust enum tree that represents every
-Draft 2020-12 keyword.  Dialect-specific desugaring is complete before the IR
+Draft 2020-12 keyword. Dialect-specific desugaring is complete before the IR
 is constructed; downstream crates never see Draft 07 or 2019-09 nodes.
 
 Key invariants:
@@ -123,7 +123,7 @@ Key invariants:
 ## 6. Runtime Plan Format
 
 The Runtime Plan (`schemaforge-runtime`) is a compact, versioned binary
-(MessagePack or JSON) representation of validation logic.  It is designed to
+(MessagePack or JSON) representation of validation logic. It is designed to
 be embedded in Python wheels and Node.js packages without a Rust compiler
 dependency at distribution time.
 
@@ -137,86 +137,98 @@ Properties:
 
 ## 7. Dialect Strategy
 
-| Dialect           | Input support | Canonical output |
-|-------------------|:-------------:|:----------------:|
-| Draft 07          | ✓             | ✓ (desugared)    |
-| Draft 2019-09     | ✓             | ✓ (desugared)    |
-| Draft 2020-12     | ✓ (native)    | ✓                |
-| OpenAPI 3.0 Schema| ✓             | ✓ (desugared)    |
-| OpenAPI 3.1 Schema| ✓             | ✓                |
+| Dialect            | Input support | Canonical output |
+| ------------------ | :-----------: | :--------------: |
+| Draft 07           |       ✓       |  ✓ (desugared)   |
+| Draft 2019-09      |       ✓       |  ✓ (desugared)   |
+| Draft 2020-12      |  ✓ (native)   |        ✓         |
+| OpenAPI 3.0 Schema |       ✓       |  ✓ (desugared)   |
+| OpenAPI 3.1 Schema |       ✓       |        ✓         |
 
-Desugaring rules live in `schemaforge-dialect`.  Each dialect adapter
+Desugaring rules live in `schemaforge-dialect`. Each dialect adapter
 transforms its keyword set into Draft 2020-12 equivalents before handing off
-to the resolver.  This keeps the IR and all downstream crates dialect-agnostic.
+to the resolver. This keeps the IR and all downstream crates dialect-agnostic.
 
 ---
 
 ## 8. Delivery Phases
 
 ### Phase 0 — Workspace skeleton
+
 Establish the Cargo workspace, shared dependency versions, lint policy
 (`unsafe_code = "forbid"`, `-D warnings`, Clippy pedantic), and CI matrix.
 Deliverable: green CI on an empty workspace.
 
 ### Phase 1 — Source & diagnostics
+
 Implement `schemaforge-source` (byte loading, UTF-8 validation, span tracking)
 and `schemaforge-diagnostics` (structured error/warning type with file + span).
 No parsing yet; just the I/O and error envelope.
 
 ### Phase 2 — Resolver & offline default
+
 Implement `schemaforge-resolver` with a `FileSystemLoader` as the default and
-an explicit opt-in `HttpLoader` behind a feature flag.  Implement `$id`
-walking, `$anchor` registration, and `$ref`→URI resolution.  All resolution
+an explicit opt-in `HttpLoader` behind a feature flag. Implement `$id`
+walking, `$anchor` registration, and `$ref`→URI resolution. All resolution
 operations are logged for audit.
 
 ### Phase 3 — Dialect layer & IR
+
 Implement `schemaforge-dialect` adapters for Draft 07, 2019-09, 2020-12, and
-OpenAPI.  Build `schemaforge-ir` with the canonical node types.  Wire them
+OpenAPI. Build `schemaforge-ir` with the canonical node types. Wire them
 together: parse → detect dialect → desugar → construct IR.
 
 ### Phase 4 — Analysis & formats
+
 Implement `schemaforge-analysis` (schema reachability, unused anchor detection,
 cycle detection) and `schemaforge-formats` (format keyword registry with
 built-in validators for `date`, `uri`, `email`, `uuid`, etc.).
 
 ### Phase 5 — Native code-generation
+
 Implement `schemaforge-codegen-rust`: IR → Rust source text (no proc-macros).
 Output must compile with `#![forbid(unsafe_code)]` and pass Clippy pedantic.
 Produce a test harness so generated code is validated against the JSON Schema
 Test Suite.
 
 ### Phase 6 — Runtime Plan & bindings
-Implement `schemaforge-runtime` plan format and evaluator.  Wrap with
-`schemaforge-python` (PyO3) and `schemaforge-node` (napi-rs).  Both FFI crates
+
+Implement `schemaforge-runtime` plan format and evaluator. Wrap with
+`schemaforge-python` (PyO3) and `schemaforge-node` (napi-rs). Both FFI crates
 are the only place `unsafe` is permitted, with documented rationale per
 function.
 
 ### Phase 7 — WASM & hardening
-Investigate WASM compilation of the Runtime Plan evaluator.  Harden against
-hostile inputs (ReDoS, deeply-nested schemas, gigantic `$defs`).  Conduct
-threat-model review.  See `docs/wasm-feasibility.md`.
+
+Investigate WASM compilation of the Runtime Plan evaluator. Harden against
+hostile inputs (ReDoS, deeply-nested schemas, gigantic `$defs`). Conduct
+threat-model review. See `docs/wasm-feasibility.md`.
 
 ---
 
 ## 9. Security Considerations
 
 ### 9.1 SSRF (Server-Side Request Forgery)
-The resolver is offline by default.  When `HttpLoader` is enabled, callers must
-supply an allowlist of permitted URI prefixes.  Attempts to resolve URIs
+
+The resolver is offline by default. When `HttpLoader` is enabled, callers must
+supply an allowlist of permitted URI prefixes. Attempts to resolve URIs
 outside the allowlist are rejected with a diagnostic, not silently dropped.
 
 ### 9.2 ReDoS
+
 Format validators that use regular expressions are compiled once at startup and
-stored as `regex::Regex` handles.  Catastrophic backtracking is mitigated by
+stored as `regex::Regex` handles. Catastrophic backtracking is mitigated by
 the `regex` crate's linear-time engine; unbounded user-supplied patterns are
 rejected.
 
 ### 9.3 Codegen Expansion
+
 The code-generation back-end enforces a configurable maximum output size (lines
-of Rust) and a maximum recursion depth for nested schemas.  Schemas that exceed
+of Rust) and a maximum recursion depth for nested schemas. Schemas that exceed
 these limits produce a diagnostic instead of hanging.
 
 ### 9.4 Hostile Schemas
+
 - Circular `$ref` chains are detected during resolution and reported as errors,
   not followed infinitely.
 - `$defs` with thousands of entries are processed incrementally; memory use is
@@ -228,19 +240,19 @@ these limits produce a diagnostic instead of hanging.
 
 ## 10. Open Questions
 
-1. Should the Runtime Plan adopt MessagePack or CBOR?  (Decision deferred to
+1. Should the Runtime Plan adopt MessagePack or CBOR? (Decision deferred to
    Phase 6 based on ecosystem tooling.)
 2. Can the WASM evaluator share the same plan bytes as the native evaluator, or
-   does WASM require a separate layout?  (See `docs/wasm-feasibility.md`.)
-3. What is the minimum supported Rust edition?  (Currently 2024; may relax for
+   does WASM require a separate layout? (See `docs/wasm-feasibility.md`.)
+3. What is the minimum supported Rust edition? (Currently 2024; may relax for
    binding crates.)
 
 ---
 
 ## 11. Alternatives Considered
 
-| Alternative                  | Reason rejected                                       |
-|------------------------------|-------------------------------------------------------|
+| Alternative                   | Reason rejected                                       |
+| ----------------------------- | ----------------------------------------------------- |
 | Fork `jsonschema-rs`          | No native codegen; IR not extensible to multi-dialect |
 | Proc-macro derive approach    | Long compile times; hard to audit generated code      |
 | Single fully-interpreted path | Insufficient peak throughput for codegen use-cases    |
@@ -252,7 +264,7 @@ these limits produce a diagnostic instead of hanging.
 
 - [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12)
 - [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite)
-- [OpenAPI Specification 3.1](https://spec.openapis.org/oas/v3.1.0)
+- [OpenAPI Specification 3.1](https://github.com/OAI/OpenAPI-Specification)
 - `docs/adr/0004-hybrid-ahead-of-time-compiler.md`
 - `docs/adr/0005-canonical-semantic-ir.md`
 - `docs/adr/0006-runtime-plan-format.md`

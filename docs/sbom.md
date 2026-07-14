@@ -1,6 +1,6 @@
 # Software Bill of Materials (SBOM)
 
-SchemaForge generates a CycloneDX SBOM for every release.  The SBOM lists all
+SchemaForge generates a CycloneDX SBOM for every release. The SBOM lists all
 direct and transitive Rust dependencies (resolved from `Cargo.lock`), Python
 dependencies, and Node.js dependencies.
 
@@ -8,10 +8,10 @@ dependencies, and Node.js dependencies.
 
 ## 1. Tooling
 
-| Ecosystem | Tool                  | Output format      |
-|-----------|-----------------------|--------------------|
-| Rust      | `cargo-cyclonedx`     | CycloneDX 1.4 JSON |
-| Python    | `cyclonedx-bom`       | CycloneDX 1.4 JSON |
+| Ecosystem | Tool                       | Output format      |
+| --------- | -------------------------- | ------------------ |
+| Rust      | `cargo-cyclonedx`          | CycloneDX 1.4 JSON |
+| Python    | `cyclonedx-bom`            | CycloneDX 1.4 JSON |
 | Node.js   | `@cyclonedx/cyclonedx-npm` | CycloneDX 1.4 JSON |
 
 Install the Rust tool:
@@ -66,7 +66,7 @@ cdxgen -t rust -o sbom-merged.cdx.json
 The `schemaforge-release.yml` workflow (`.github/workflows/schemaforge-release.yml`)
 runs SBOM generation as part of every tagged release:
 
-```
+```text
 generate-sbom job
   ├── cargo cyclonedx (Rust)
   ├── cyclonedx-bom  (Python)
@@ -94,7 +94,7 @@ cyclonedx validate --input-file sbom-rust.cdx.json --input-format json
 ## 5. Known Gaps
 
 - The SBOM does not yet include the vendored JSON Schema Test Suite fixtures
-  under `conformance/`.  These are Apache-2.0 licensed and will be added in a
+  under `conformance/`. These are Apache-2.0 licensed and will be added in a
   future release.
 - The merged cross-ecosystem SBOM step is manual; full automation is planned
   once the CI matrix stabilises.

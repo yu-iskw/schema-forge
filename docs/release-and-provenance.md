@@ -1,7 +1,7 @@
 # Release and Provenance
 
 This document describes the release checklist, supply-chain controls, and
-attestation requirements for SchemaForge.  Every published artefact must trace
+attestation requirements for SchemaForge. Every published artefact must trace
 back to a tagged commit that passed the full CI suite.
 
 ---
@@ -11,10 +11,10 @@ back to a tagged commit that passed the full CI suite.
 ### 1.1 Code and tests
 
 - [ ] All changes are on a release branch (`release/vX.Y.Z`) and have been
-  reviewed.
+      reviewed.
 - [ ] `make lint && make test` passes locally and in CI (`test.yml`).
 - [ ] No open severity-high or severity-critical advisories in
-  `cargo audit --deny warnings`.
+      `cargo audit --deny warnings`.
 - [ ] Clippy is clean: `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
 - [ ] `cargo fmt --all --check` reports no diffs.
 - [ ] CodeQL scan (`codeql.yml`) shows zero new findings.
@@ -23,7 +23,7 @@ back to a tagged commit that passed the full CI suite.
 
 - [ ] Root `Cargo.toml` `[workspace.package]` `version` field updated.
 - [ ] All member crate `Cargo.toml` files that inherit the version are
-  consistent (they should use `version.workspace = true`).
+      consistent (they should use `version.workspace = true`).
 - [ ] `Cargo.lock` is committed with the new versions.
 - [ ] `packages/python/pyproject.toml` version updated.
 - [ ] `packages/node/package.json` version updated.
@@ -46,7 +46,7 @@ back to a tagged commit that passed the full CI suite.
 
 Publish crates in dependency order so crates.io can resolve them:
 
-```
+```text
 schemaforge-source
 schemaforge-diagnostics
 schemaforge-dialect
@@ -113,7 +113,7 @@ the GitHub Release.
 ### 4.1 Compiler manifest digest
 
 `schemaforge-runtime` exposes a `RUNTIME_PLAN` constant that describes the
-current plan schema version.  Before publishing, record the digest of the
+current plan schema version. Before publishing, record the digest of the
 compiled `sfg` binary:
 
 ```bash
@@ -138,7 +138,7 @@ verified by consumers using `slsa-verifier`.
 
 ### 4.3 Sigstore / cosign (optional)
 
-Sign release artefacts with [cosign](https://docs.sigstore.dev/cosign/overview/):
+Sign release artefacts with [cosign](https://github.com/sigstore/cosign):
 
 ```bash
 cosign sign-blob --bundle sfg.bundle target/release/sfg
@@ -175,11 +175,11 @@ If a critical defect is found after publication:
 ## 7. Shared Compiler Manifest Digests
 
 The `RUNTIME_PLAN` constant in `schemaforge-runtime/src/lib.rs` encodes the
-plan schema version.  Every release must record:
+plan schema version. Every release must record:
 
 | Release | `RUNTIME_PLAN` version | `sfg` binary SHA-256 |
-|---------|------------------------|----------------------|
-| v0.1.0  | 0.1                    | *(populated by CI)*  |
+| ------- | ---------------------- | -------------------- |
+| v0.1.0  | 0.1                    | _(populated by CI)_  |
 
 This table is updated automatically by the `schemaforge-release.yml` workflow
 step `record-manifest-digest`.

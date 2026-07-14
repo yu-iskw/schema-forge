@@ -1,14 +1,14 @@
 # WASM Feasibility — Deferred RFC Stub (Phase 7)
 
-| Field   | Value                    |
-|---------|--------------------------|
-| Status  | **Deferred**             |
-| Phase   | 7                        |
-| Date    | 2026-07-14               |
+| Field  | Value        |
+| ------ | ------------ |
+| Status | **Deferred** |
+| Phase  | 7            |
+| Date   | 2026-07-14   |
 
-> **This document is a stub.**  Full investigation and RFC text will be written
+> **This document is a stub.** Full investigation and RFC text will be written
 > during Phase 7, after the Runtime Plan format and evaluator are stable
-> (Phase 6 complete).  The sections below capture the open questions and
+> (Phase 6 complete). The sections below capture the open questions and
 > constraints that must be resolved.
 
 ---
@@ -16,7 +16,7 @@
 ## 1. Motivation
 
 The Runtime Plan evaluator (`schemaforge-runtime`) is designed to be
-dependency-light and platform-portable.  Compiling it to WebAssembly would
+dependency-light and platform-portable. Compiling it to WebAssembly would
 enable:
 
 - Embedding schema validation in browser applications without a server round-
@@ -32,14 +32,14 @@ enable:
 
 ### 2.1 No `std::net` or filesystem I/O in the evaluator
 
-The evaluator itself must not perform network or filesystem operations.  The
+The evaluator itself must not perform network or filesystem operations. The
 offline-default resolver runs at compile time (plan generation), not at
 validation time, so this constraint is already met by design.
 
 ### 2.2 No `unsafe` in WASM target
 
 WebAssembly's linear memory model does not provide the same safety guarantees
-as native Rust with the standard allocator.  The WASM build of the evaluator
+as native Rust with the standard allocator. The WASM build of the evaluator
 must compile with `#![forbid(unsafe_code)]`, which is already the workspace
 default.
 
@@ -47,7 +47,7 @@ default.
 
 Full Rust standard library WASM binaries are often 1–5 MB before compression.
 The evaluator must target `wasm32-unknown-unknown` (no `wasi`) or
-`wasm32-wasi` depending on the host.  Size budget: < 500 KB gzip.
+`wasm32-wasi` depending on the host. Size budget: < 500 KB gzip.
 
 ### 2.4 Plan format compatibility
 
@@ -60,7 +60,7 @@ bytes as the native evaluator, or whether a separate plan layout is needed
 ## 3. Open Questions
 
 1. **Same plan bytes or separate WASM plan layout?**
-   The native plan uses MessagePack.  MessagePack is byte-order neutral, so
+   The native plan uses MessagePack. MessagePack is byte-order neutral, so
    compatibility is likely, but needs verification with the `rmp-serde` WASM
    build.
 
@@ -73,7 +73,7 @@ bytes as the native evaluator, or whether a separate plan layout is needed
 4. **Thread support** — `wasm32-unknown-unknown` does not support threads.
    Does the evaluator need to be async-safe or multi-threaded?
 
-5. **Testing** — how are WASM build artefacts tested in CI?  Options include
+5. **Testing** — how are WASM build artefacts tested in CI? Options include
    `wasmtime` (Rust native), `deno`, or `node` with `--experimental-wasm-*`
    flags.
 
@@ -85,9 +85,9 @@ The following workspace dependencies need WASM-compatibility verification
 before Phase 7 work begins:
 
 | Dependency   | WASM status        | Notes                                      |
-|--------------|--------------------|--------------------------------------------|
+| ------------ | ------------------ | ------------------------------------------ |
 | `serde_json` | ✓ Known compatible | No OS dependencies                         |
-| `rmp-serde`  | Likely compatible  | Needs `wasm32` CI job to confirm            |
+| `rmp-serde`  | Likely compatible  | Needs `wasm32` CI job to confirm           |
 | `regex`      | ✓ Known compatible | Uses `aho-corasick` which compiles to WASM |
 | `fluent-uri` | Unknown            | Needs audit; may use `std::net`            |
 | `indexmap`   | ✓ Known compatible | Pure data structure                        |
@@ -112,6 +112,6 @@ When Phase 7 begins, this stub will be replaced by a full RFC covering:
 
 - RFC 0001, §8 Phase 7: `docs/rfc/0001-schemaforge-hybrid-compiler.md`
 - ADR 0006 (Runtime Plan format): `docs/adr/0006-runtime-plan-format.md`
-- [wasm-bindgen book](https://rustwasm.github.io/docs/wasm-bindgen/)
-- [wasm-pack](https://rustwasm.github.io/wasm-pack/)
-- [wasmtime](https://wasmtime.dev/)
+- [wasm-bindgen](https://github.com/wasm-bindgen/wasm-bindgen)
+- [wasm-pack](https://github.com/wasm-bindgen/wasm-pack)
+- [wasmtime](https://github.com/bytecodealliance/wasmtime)

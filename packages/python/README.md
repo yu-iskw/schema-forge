@@ -1,6 +1,6 @@
 # schemaforge (Python)
 
-Python bindings for the [Schemaforge](https://github.com/yu-iskw/rust-project-template)
+Python bindings for the [Schemaforge](https://github.com/yu-iskw/schema-forge)
 JSON Schema compiler.
 
 ## Features
@@ -18,7 +18,7 @@ JSON Schema compiler.
 pip install schemaforge
 ```
 
-The wheel is built with [maturin](https://www.maturin.rs/) and includes the
+The wheel is built with [maturin](https://github.com/PyO3/maturin) and includes the
 native Rust extension module.
 
 ### Development install (requires Rust + maturin)
@@ -38,10 +38,10 @@ pip install -e .
 > **Note on `extension-module` feature**
 >
 > The `extension-module` Cargo feature activates PyO3 FFI glue inside the
-> `schemaforge-python` crate.  PyO3 requires `unsafe` code at the ABI
-> boundary.  The workspace forbids `unsafe` globally, so the FFI code is
+> `schemaforge-python` crate. PyO3 requires `unsafe` code at the ABI
+> boundary. The workspace forbids `unsafe` globally, so the FFI code is
 > gated behind this feature flag and the crate compiles as safe Rust without
-> it.  See [ADR-0003](../../docs/adr/0003-ffi-binding-unsafe-exception.md) for
+> it. See [ADR-0003](../../docs/adr/0003-ffi-binding-unsafe-exception.md) for
 > the full rationale.
 
 ### CLI fallback only
@@ -77,7 +77,7 @@ assert len(schema.validate_json("-1")) > 0
 
 ### `validate_json(schema_str, instance_str) -> list[str]`
 
-Validate a JSON instance against a JSON Schema.  Both arguments must be
+Validate a JSON instance against a JSON Schema. Both arguments must be
 valid JSON strings.
 
 - Returns `[]` when the instance is **valid**.
@@ -87,7 +87,7 @@ valid JSON strings.
 
 ### `compile_schema(schema_str) -> CompiledSchema`
 
-Compile a schema for repeated validation.  Raises `ValueError` on invalid input.
+Compile a schema for repeated validation. Raises `ValueError` on invalid input.
 
 ### `CompiledSchema.validate_json(instance_str) -> list[str]`
 
@@ -97,7 +97,7 @@ Same return semantics as `validate_json`.
 
 The `conformance/parity/fixtures.json` file contains a shared test corpus
 used to verify consistent behaviour across the Rust, Python, and Node.js
-bindings.  See [conformance/parity/README.md](../../conformance/parity/README.md)
+bindings. See [conformance/parity/README.md](../../conformance/parity/README.md)
 for details.
 
 ## License
