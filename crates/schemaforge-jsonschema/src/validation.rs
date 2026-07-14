@@ -209,8 +209,14 @@ fn apply_numeric_constraints(
 }
 
 fn check_minimum(obj: &Map<String, Value>, n: f64, path: &str, out: &mut ValidationOutput) {
+    // Draft 4 / OAS 3.0: `exclusiveMinimum: true` promotes `minimum` to an
+    // exclusive bound.  Draft 2020-12 uses a numeric `exclusiveMinimum` directly.
+    let excl_bool = obj
+        .get("exclusiveMinimum")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if let Some(min) = obj.get("minimum").and_then(Value::as_f64)
-        && n < min
+        && ((excl_bool && n <= min) || (!excl_bool && n < min))
     {
         out.merge(ValidationOutput::fail(ValidationError::new(
             path,
@@ -230,8 +236,14 @@ fn check_minimum(obj: &Map<String, Value>, n: f64, path: &str, out: &mut Validat
 }
 
 fn check_maximum(obj: &Map<String, Value>, n: f64, path: &str, out: &mut ValidationOutput) {
+    // Draft 4 / OAS 3.0: `exclusiveMaximum: true` promotes `maximum` to an
+    // exclusive bound.  Draft 2020-12 uses a numeric `exclusiveMaximum` directly.
+    let excl_bool = obj
+        .get("exclusiveMaximum")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if let Some(max) = obj.get("maximum").and_then(Value::as_f64)
-        && n > max
+        && ((excl_bool && n >= max) || (!excl_bool && n > max))
     {
         out.merge(ValidationOutput::fail(ValidationError::new(
             path,
@@ -414,6 +426,65 @@ mod tests {
             .unwrap()
             .validate(instance)
             .is_valid()
+    }
+
+    // ── exclusiveMinimum / exclusiveMaximum boolean (Draft 4 / OAS 3.0) ────────
+
+    #[test]
+    fn exclusive_minimum_bool_true_rejects_equal_value() {
+        // exclusiveMinimum: true makes `minimum` exclusive: n == minimum must fail.
+        let schema = json!({"minimum": 5.0, "exclusiveMinimum": true});
+        assert!(
+            !valid(&schema, &json!(5.0)),
+            "value equal to exclusive minimum must be rejected"
+        );
+        assert!(
+            valid(&schema, &json!(5.001)),
+            "value strictly above exclusive minimum must be accepted"
+        );
+        assert!(
+            !valid(&schema, &json!(4.999)),
+            "value below exclusive minimum must be rejected"
+        );
+    }
+
+    #[test]
+    fn exclusive_maximum_bool_true_rejects_equal_value() {
+        // exclusiveMaximum: true makes `maximum` exclusive: n == maximum must fail.
+        let schema = json!({"maximum": 10.0, "exclusiveMaximum": true});
+        assert!(
+            !valid(&schema, &json!(10.0)),
+            "value equal to exclusive maximum must be rejected"
+        );
+        assert!(
+            valid(&schema, &json!(9.999)),
+            "value strictly below exclusive maximum must be accepted"
+        );
+        assert!(
+            !valid(&schema, &json!(10.001)),
+            "value above exclusive maximum must be rejected"
+        );
+    }
+
+    #[test]
+    fn exclusive_minimum_bool_false_inclusive_bound() {
+        // exclusiveMinimum: false means minimum is inclusive; equal value must pass.
+        let schema = json!({"minimum": 3.0, "exclusiveMinimum": false});
+        assert!(
+            valid(&schema, &json!(3.0)),
+            "value equal to inclusive minimum must be accepted"
+        );
+        assert!(!valid(&schema, &json!(2.999)));
+    }
+
+    #[test]
+    fn exclusive_maximum_bool_false_inclusive_bound() {
+        let schema = json!({"maximum": 7.0, "exclusiveMaximum": false});
+        assert!(
+            valid(&schema, &json!(7.0)),
+            "value equal to inclusive maximum must be accepted"
+        );
+        assert!(!valid(&schema, &json!(7.001)));
     }
 
     #[test]
