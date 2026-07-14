@@ -219,6 +219,10 @@ fn collect_branch_props_depth(
         return;
     };
     collect_props_from_obj(obj, instance, evaluated, ctx);
+    // `dependentSchemas` nested inside an applicator branch (e.g. inside allOf
+    // or the target of a $ref) must also contribute their declared properties
+    // when their trigger key is present in the instance.
+    collect_dependent_schemas_props(obj, instance, ctx, evaluated);
     for_each_child_schema(obj, instance, ctx, |sub| {
         collect_branch_props_depth(sub, instance, evaluated, ctx, depth + 1);
     });
@@ -998,6 +1002,86 @@ mod tests {
         assert!(
             !valid(&s, &json!({"kind": "a", "label": "b", "extra": 1})),
             "unevaluated property must still be rejected"
+        );
+    }
+
+    // ── dependentSchemas under allOf / $ref ───────────────────────────────────
+
+    #[test]
+    fn unevaluated_properties_allof_dependent_schemas_props_evaluated() {
+        // `dependentSchemas` nested inside an allOf branch must contribute
+        // evaluated properties when the trigger key is present in the instance.
+        let s = json!({
+            "allOf": [
+                {
+                    "properties": {"credit_card": {"type": "string"}},
+                    "dependentSchemas": {
+                        "credit_card": {
+                            "properties": {"billing_address": {"type": "string"}}
+                        }
+                    }
+                }
+            ],
+            "unevaluatedProperties": false
+        });
+        assert!(
+            valid(
+                &s,
+                &json!({"credit_card": "1234", "billing_address": "123 Main"})
+            ),
+            "billing_address must be evaluated via dependentSchemas inside allOf"
+        );
+        assert!(
+            !valid(
+                &s,
+                &json!({"credit_card": "1234", "billing_address": "123 Main", "extra": 1})
+            ),
+            "unevaluated extra property must still be rejected"
+        );
+        // When the trigger is absent the dependent schema is not activated,
+        // so billing_address is not evaluated by it — but credit_card is still
+        // covered by the allOf branch's `properties`.
+        assert!(
+            !valid(&s, &json!({"billing_address": "123 Main"})),
+            "billing_address must be rejected when trigger credit_card is absent"
+        );
+    }
+
+    #[test]
+    fn unevaluated_properties_ref_dependent_schemas_props_evaluated() {
+        // `dependentSchemas` inside a sibling $ref target must contribute
+        // evaluated properties when the trigger key is present.
+        let s = json!({
+            "$defs": {
+                "WithCard": {
+                    "properties": {"credit_card": {"type": "string"}},
+                    "dependentSchemas": {
+                        "credit_card": {
+                            "properties": {"billing_address": {"type": "string"}}
+                        }
+                    }
+                }
+            },
+            "$ref": "#/$defs/WithCard",
+            "unevaluatedProperties": false
+        });
+        assert!(
+            valid(
+                &s,
+                &json!({"credit_card": "1234", "billing_address": "123 Main"})
+            ),
+            "billing_address must be evaluated via dependentSchemas in $ref target"
+        );
+        assert!(
+            !valid(
+                &s,
+                &json!({"credit_card": "1234", "billing_address": "123 Main", "extra": 1})
+            ),
+            "extra property not in any schema must still be rejected"
+        );
+        assert!(
+            !valid(&s, &json!({"billing_address": "123 Main"})),
+            "billing_address must be rejected when trigger credit_card is absent"
         );
     }
 

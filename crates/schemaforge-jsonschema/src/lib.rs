@@ -265,7 +265,19 @@ fn check_for_unsupported_keywords(schema: &Value) -> Result<(), SchemaError> {
 }
 
 fn check_unsupported_in_object(obj: &Map<String, Value>) -> Result<(), SchemaError> {
-    for keyword in &["$dynamicRef", "$dynamicAnchor"] {
+    for keyword in &[
+        "$dynamicRef",
+        "$dynamicAnchor",
+        // Draft 2019-09 recursive reference applicators — runtime anchor-resolution
+        // semantics not yet implemented; reject explicitly rather than producing
+        // silently wrong results.
+        "$recursiveRef",
+        "$recursiveAnchor",
+        // Legacy Draft 4 / Draft 7 property-dependency keyword.  It conflates
+        // property-presence-implies-required and property-presence-implies-schema,
+        // neither of which is yet represented in this validator.
+        "dependencies",
+    ] {
         if obj.contains_key(*keyword) {
             return Err(SchemaError::UnsupportedKeyword {
                 keyword: (*keyword).to_owned(),
@@ -945,6 +957,80 @@ mod tests {
         assert!(
             Validator::new(&schema, ValidationOptions::default()).is_err(),
             "nested $dynamicRef must be rejected at construction"
+        );
+    }
+
+    // ── $recursiveRef / $recursiveAnchor unsupported ──────────────────────────
+
+    #[test]
+    fn recursive_ref_rejected_at_construction() {
+        // $recursiveRef carries runtime anchor-resolution semantics not yet
+        // implemented; the validator must refuse rather than silently misbehave.
+        let schema = json!({"$recursiveRef": "#"});
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_err(),
+            "schema with $recursiveRef must fail at construction"
+        );
+    }
+
+    #[test]
+    fn recursive_anchor_rejected_at_construction() {
+        let schema = json!({"$recursiveAnchor": true, "type": "object"});
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_err(),
+            "schema with $recursiveAnchor must fail at construction"
+        );
+    }
+
+    #[test]
+    fn recursive_ref_nested_rejected_at_construction() {
+        // $recursiveRef nested inside allOf must still be caught.
+        let schema = json!({
+            "allOf": [
+                {"$recursiveRef": "#"}
+            ]
+        });
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_err(),
+            "nested $recursiveRef must be rejected at construction"
+        );
+    }
+
+    // ── `dependencies` (legacy Draft 4/7) unsupported ────────────────────────
+
+    #[test]
+    fn dependencies_rejected_at_construction() {
+        // The legacy `dependencies` keyword conflates two distinct semantics
+        // that the validator does not yet implement; reject explicitly.
+        let schema = json!({"dependencies": {"foo": ["bar"]}});
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_err(),
+            "schema with `dependencies` must fail at construction"
+        );
+    }
+
+    #[test]
+    fn dependencies_schema_form_rejected_at_construction() {
+        // `dependencies` with a sub-schema value (not an array) must also be
+        // rejected.
+        let schema = json!({"dependencies": {"foo": {"required": ["bar"]}}});
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_err(),
+            "schema-form `dependencies` must fail at construction"
+        );
+    }
+
+    #[test]
+    fn dependencies_nested_rejected_at_construction() {
+        // `dependencies` nested inside a sub-schema must still be caught.
+        let schema = json!({
+            "properties": {
+                "inner": {"dependencies": {"a": ["b"]}}
+            }
+        });
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_err(),
+            "nested `dependencies` must be rejected at construction"
         );
     }
 }
