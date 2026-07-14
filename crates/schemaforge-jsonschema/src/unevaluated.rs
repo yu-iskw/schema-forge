@@ -251,19 +251,16 @@ fn apply_unevaluated_items(
         return;
     };
 
-    // Collect evaluation context from the schema and its allOf/$ref branches.
     let (effective_prefix_len, has_items) = items_eval_range(obj, ctx);
-    let contains_schema = obj.get("contains");
+    // `items` evaluates every remaining index, so unevaluatedItems is a no-op.
+    if has_items {
+        return;
+    }
 
-    for (i, item) in items.iter().enumerate() {
-        if is_item_evaluated(
-            i,
-            effective_prefix_len,
-            has_items,
-            contains_schema,
-            item,
-            ctx,
-        ) {
+    let contains_schema = obj.get("contains");
+    for (i, item) in items.iter().enumerate().skip(effective_prefix_len) {
+        // Draft 2020-12 §11.2: items matching `contains` are evaluated.
+        if contains_schema.is_some_and(|schema| validate_schema(schema, item, "", ctx).is_valid()) {
             continue;
         }
         let item_path = format!("{path}/{i}");
@@ -333,33 +330,6 @@ fn collect_branch_items_eval(
             collect_branch_items_eval(sub, max_prefix, has_items, ctx, depth + 1);
         }
     }
-}
-
-/// Return `true` when the item at `index` is considered evaluated and therefore
-/// should not be validated by `unevaluatedItems`.
-///
-/// An item is evaluated when:
-/// - its index falls within the `prefixItems` range, OR
-/// - an `items` keyword is present (evaluates all remaining items), OR
-/// - the item validates successfully against the `contains` schema.
-fn is_item_evaluated(
-    index: usize,
-    prefix_len: usize,
-    has_items: bool,
-    contains_schema: Option<&Value>,
-    item: &Value,
-    ctx: &ValidationContext<'_>,
-) -> bool {
-    if index < prefix_len {
-        return true;
-    }
-    if has_items {
-        return true;
-    }
-    if let Some(contains) = contains_schema {
-        return validate_schema(contains, item, "", ctx).is_valid();
-    }
-    false
 }
 
 #[cfg(test)]
