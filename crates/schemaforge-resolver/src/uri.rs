@@ -8,9 +8,17 @@ pub(crate) fn normalize_uri(mut uri: String) -> String {
     uri
 }
 
+/// Split a URI into `(base, fragment)` at the first `#`.
+///
+/// Returns `(uri, "")` when the URI contains no `#`.
+pub(crate) fn split_uri_fragment(uri: &str) -> (&str, &str) {
+    uri.find('#')
+        .map_or((uri, ""), |pos| (&uri[..pos], &uri[pos + 1..]))
+}
+
 /// Strip the fragment component (`#...`) from a URI.
 pub(crate) fn strip_fragment(uri: &str) -> &str {
-    uri.find('#').map_or(uri, |i| &uri[..i])
+    split_uri_fragment(uri).0
 }
 
 /// Resolve `reference` against `base` following RFC 3986 (simplified).
@@ -66,5 +74,15 @@ mod tests {
     fn resolve_relative_uri() {
         let result = resolve_uri("https://example.com/schemas/a.json", "b.json");
         assert_eq!(result, "https://example.com/schemas/b.json");
+    }
+
+    #[test]
+    fn split_uri_fragment_splits_at_hash() {
+        assert_eq!(
+            split_uri_fragment("https://ex.com/s.json#/$defs/X"),
+            ("https://ex.com/s.json", "/$defs/X")
+        );
+        assert_eq!(split_uri_fragment("urn:x"), ("urn:x", ""));
+        assert_eq!(split_uri_fragment("urn:x#"), ("urn:x", ""));
     }
 }

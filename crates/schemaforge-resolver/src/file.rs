@@ -65,92 +65,17 @@ impl Default for FileResolver {
 
 impl Resolver for FileResolver {
     fn resolve(&self, base: &str, reference: &str) -> Result<Value, ResolveError> {
+        // Offline registry applies fragments itself; prefer it when present.
         if let Ok(v) = self.offline.resolve(base, reference) {
             return Ok(v);
         }
         let resolved = uri::resolve_uri(base, reference);
         // Strip any fragment before opening the file so the OS sees a plain
-        // path.  After loading the document the fragment is applied:
-        //   - empty / absent → return the whole document
-        //   - starts with `/` → follow as a JSON Pointer (RFC 6901)
-        //   - otherwise       → scan the document for `$anchor` by name
-        let path_uri = uri::strip_fragment(&resolved);
+        // path, then apply the fragment to the loaded document.
+        let (path_uri, fragment) = uri::split_uri_fragment(&resolved);
         let doc = load_from_path(path_uri, self.base_dir.as_deref(), self.max_bytes)?;
-        let fragment = resolved.find('#').map_or("", |i| &resolved[i + 1..]);
-        apply_fragment(doc, fragment, &resolved)
+        crate::fragment::apply(doc, fragment, &resolved)
     }
-}
-
-// ── Fragment application ──────────────────────────────────────────────────────
-
-/// Apply a URI fragment to a loaded JSON document.
-///
-/// - Empty fragment → return the document unchanged.
-/// - Fragment starting with `/` → follow as a JSON Pointer (RFC 6901).
-/// - Any other fragment → scan the document for a sub-schema whose
-///   `"$anchor"` property matches the name and return that sub-schema.
-fn apply_fragment(doc: Value, fragment: &str, uri: &str) -> Result<Value, ResolveError> {
-    if fragment.is_empty() {
-        return Ok(doc);
-    }
-    if fragment.starts_with('/') {
-        apply_json_pointer(doc, fragment, uri)
-    } else {
-        find_anchor_in_value(&doc, fragment).ok_or_else(|| ResolveError::NotFound(uri.to_owned()))
-    }
-}
-
-/// Follow a JSON Pointer (RFC 6901) on an owned `Value`.
-///
-/// `pointer` must start with `/`.  Tokens are unescaped (`~1` → `/`,
-/// `~0` → `~`) before descent.  Returns `ResolveError::NotFound` when
-/// any token cannot be followed.
-fn apply_json_pointer(mut doc: Value, pointer: &str, uri: &str) -> Result<Value, ResolveError> {
-    let tokens = pointer.strip_prefix('/').unwrap_or("");
-    if tokens.is_empty() {
-        return Ok(doc);
-    }
-    for token in tokens.split('/') {
-        let decoded = token.replace("~1", "/").replace("~0", "~");
-        doc = match doc {
-            Value::Object(mut map) => map
-                .remove(&decoded)
-                .ok_or_else(|| ResolveError::NotFound(uri.to_owned()))?,
-            Value::Array(arr) => {
-                let idx: usize = decoded
-                    .parse()
-                    .map_err(|_| ResolveError::NotFound(uri.to_owned()))?;
-                arr.into_iter()
-                    .nth(idx)
-                    .ok_or_else(|| ResolveError::NotFound(uri.to_owned()))?
-            }
-            _ => return Err(ResolveError::NotFound(uri.to_owned())),
-        };
-    }
-    Ok(doc)
-}
-
-/// Recursively scan `val` for the first JSON object whose `"$anchor"` string
-/// property equals `name` and return a clone of that object.
-///
-/// The scan is a plain JSON walk and is not limited to schema-valued
-/// positions; callers should ensure the document is a JSON Schema where
-/// `$anchor` carries its defined meaning.
-fn find_anchor_in_value(val: &Value, name: &str) -> Option<Value> {
-    let Value::Object(obj) = val else {
-        return None;
-    };
-    if let Some(Value::String(anchor)) = obj.get("$anchor")
-        && anchor == name
-    {
-        return Some(val.clone());
-    }
-    for child in obj.values() {
-        if let Some(found) = find_anchor_in_value(child, name) {
-            return Some(found);
-        }
-    }
-    None
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -674,5 +599,32 @@ mod tests {
             "missing pointer key must return NotFound, got {result:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_resolver_anchor_inside_allof_array() {
+        let dir = std::env::temp_dir().join("sf_frag_allof_anchor_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = r#"{"allOf":[{"$anchor":"inAllOf","type":"string"}]}"#;
+        let uri = make_schema_file(&dir, "schema.json", content);
+        let r = FileResolver::with_base_dir(&dir);
+        let result = r.resolve("", &format!("{uri}#inAllOf"));
+        assert!(
+            result.is_ok(),
+            "anchor under allOf must resolve: {result:?}"
+        );
+        assert_eq!(result.unwrap()["type"], serde_json::json!("string"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_resolver_offline_hit_still_applies_fragment() {
+        let mut r = FileResolver::default();
+        r.register(
+            "urn:offline",
+            serde_json::json!({ "$defs": { "N": { "type": "number" } } }),
+        );
+        let result = r.resolve("", "urn:offline#/$defs/N");
+        assert_eq!(result.unwrap(), serde_json::json!({ "type": "number" }));
     }
 }

@@ -47,11 +47,13 @@ impl OfflineResolver {
 impl Resolver for OfflineResolver {
     fn resolve(&self, base: &str, reference: &str) -> Result<Value, ResolveError> {
         let resolved = uri::resolve_uri(base, reference);
-        let key = uri::strip_fragment(&resolved);
-        self.schemas
+        let (key, fragment) = uri::split_uri_fragment(&resolved);
+        let doc = self
+            .schemas
             .get(&uri::normalize_uri(key.to_owned()))
             .cloned()
-            .ok_or(ResolveError::NotFound(resolved))
+            .ok_or_else(|| ResolveError::NotFound(resolved.clone()))?;
+        crate::fragment::apply(doc, fragment, &resolved)
     }
 }
 
@@ -87,5 +89,33 @@ mod tests {
             .resolve("https://example.com/x.json", "https://example.com/s.json")
             .unwrap();
         assert_eq!(v["type"], json!("number"));
+    }
+
+    #[test]
+    fn offline_resolver_applies_pointer_fragment() {
+        let mut r = OfflineResolver::new();
+        r.register(
+            "https://example.com/schema.json",
+            json!({ "$defs": { "X": { "type": "string" } } }),
+        );
+        let v = r
+            .resolve(
+                "https://example.com/other.json",
+                "https://example.com/schema.json#/$defs/X",
+            )
+            .unwrap();
+        assert_eq!(v, json!({ "type": "string" }));
+    }
+
+    #[test]
+    fn offline_resolver_applies_anchor_fragment() {
+        let mut r = OfflineResolver::new();
+        r.register(
+            "urn:ext",
+            json!({ "$defs": { "S": { "$anchor": "myStr", "type": "string" } } }),
+        );
+        let v = r.resolve("", "urn:ext#myStr").unwrap();
+        assert_eq!(v["type"], json!("string"));
+        assert_eq!(v["$anchor"], json!("myStr"));
     }
 }

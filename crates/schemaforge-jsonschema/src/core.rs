@@ -4,8 +4,6 @@
 //! `dependencies` are rejected at schema-construction time by
 //! [`crate::Validator::new`] and are therefore not handled here.
 
-use std::borrow::Cow;
-
 use serde_json::{Map, Value};
 
 use crate::{ValidationContext, ValidationError, ValidationOutput};
@@ -106,43 +104,9 @@ fn build_registry_key(ref_uri: &str, base_uri: &str) -> String {
 
 // ── JSON Pointer resolution ───────────────────────────────────────────────────
 
-/// Follow a JSON Pointer (RFC 6901) from `root`.
-///
-/// An empty pointer returns the root itself.  Each `/`-delimited token is
-/// applied in sequence with `~1` -> `/` and `~0` -> `~` unescaping.
+/// Follow a JSON Pointer (RFC 6901) from `root` via [`Value::pointer`].
 fn resolve_json_pointer<'a>(root: &'a Value, pointer: &str) -> Option<&'a Value> {
-    if pointer.is_empty() {
-        return Some(root);
-    }
-    let tokens = pointer.strip_prefix('/')?;
-    let mut current = root;
-    for token in tokens.split('/') {
-        let decoded = unescape_token(token);
-        current = descend(current, &decoded)?;
-    }
-    Some(current)
-}
-
-fn descend<'a>(node: &'a Value, token: &str) -> Option<&'a Value> {
-    match node {
-        Value::Object(obj) => obj.get(token),
-        Value::Array(arr) => {
-            let idx: usize = token.parse().ok()?;
-            arr.get(idx)
-        }
-        _ => None,
-    }
-}
-
-/// Unescape a JSON Pointer token (RFC 6901 §3).
-///
-/// Uses a `Borrowed` fast-path when the token contains no `~`, avoiding any
-/// heap allocation for the common case.
-fn unescape_token(token: &str) -> Cow<'_, str> {
-    if !token.contains('~') {
-        return Cow::Borrowed(token);
-    }
-    Cow::Owned(token.replace("~1", "/").replace("~0", "~"))
+    root.pointer(pointer)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -323,21 +287,8 @@ mod tests {
     }
 
     #[test]
-    fn unescape_token_no_tilde_is_borrowed() {
-        let t = unescape_token("simple");
-        assert!(matches!(t, Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn unescape_token_with_tilde_is_owned() {
-        let t = unescape_token("a~1b");
-        assert_eq!(&*t, "a/b");
-        assert!(matches!(t, Cow::Owned(_)));
-    }
-
-    #[test]
-    fn unescape_token_tilde_zero() {
-        let t = unescape_token("a~0b");
-        assert_eq!(&*t, "a~b");
+    fn pointer_tilde_unescape() {
+        let root = json!({"a/b": {"c~d": 1}});
+        assert_eq!(resolve_json_pointer(&root, "/a~1b/c~0d"), Some(&json!(1)));
     }
 }

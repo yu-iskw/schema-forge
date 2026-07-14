@@ -11,6 +11,7 @@
 //! the CLI.
 
 pub mod file;
+pub(crate) mod fragment;
 pub mod limit;
 pub mod lock;
 pub mod network;
