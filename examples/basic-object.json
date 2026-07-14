@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/basic-object",
+  "title": "BasicObject",
+  "description": "A simple object schema demonstrating SchemaForge compilation.",
+  "type": "object",
+  "required": ["id", "name"],
+  "properties": {
+    "id": {
+      "description": "Unique identifier for the object.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "name": {
+      "description": "Human-readable display name.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "email": {
+      "description": "Optional contact email address.",
+      "type": "string",
+      "format": "email"
+    },
+    "age": {
+      "description": "Age in years.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 150
+    },
+    "tags": {
+      "description": "Arbitrary string tags.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "metadata": {
+      "description": "Free-form key/value metadata.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

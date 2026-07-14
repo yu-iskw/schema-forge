@@ -1,0 +1,83 @@
+# schemaforge.toml — project-level configuration for the SchemaForge compiler.
+#
+# Copy this file to your project root as `schemaforge.toml` and adjust the
+# values to suit your schema collection.
+#
+# All paths are relative to the directory containing schemaforge.toml unless
+# they begin with a URI scheme.  Glob patterns use the standard `**` syntax.
+#
+# Run `sfg info --config` to display the resolved configuration in use.
+
+# ── Compiler settings ─────────────────────────────────────────────────────────
+[compiler]
+# JSON Schema dialect assumed when no $schema keyword is present.
+# Supported values: "draft-2020-12", "draft-2019-09", "draft-07", "openapi-3.0", "openapi-3.1"
+default_dialect = "draft-2020-12"
+
+# Output directory for generated Rust source files (ahead-of-time path).
+out_dir = "src/generated"
+
+# Output directory for Runtime Plan files (interpreted path).
+plan_dir = "out/plans"
+
+# Emit human-readable JSON plans in addition to the binary plan format.
+# Useful during development; disable for production builds.
+plan_json = true
+
+# ── Resource limits ───────────────────────────────────────────────────────────
+[limits]
+# Maximum depth of $ref / $recursiveRef chains before the compiler aborts.
+max_ref_depth = 64
+
+# Maximum number of schema nodes allowed in a single document.
+max_nodes = 100_000
+
+# Maximum byte size of a single source file (bytes).
+max_source_bytes = 10_485_760   # 10 MiB
+
+# Maximum number of nested allOf / anyOf / oneOf levels the analyser will
+# traverse before emitting a diagnostic and skipping deeper levels.
+max_combinator_depth = 16
+
+# ── Resolver settings ─────────────────────────────────────────────────────────
+[resolver]
+# Offline mode (default).  Set to false only when HTTP loading is required
+# and you have explicitly allowed the necessary domains.
+offline = true
+
+# Additional local schema roots that can be referenced by $id URIs.
+# Each entry is a directory; SchemaForge maps URIs to files within it.
+roots = [
+  "schemas/",
+  "vendor/schemas/",
+]
+
+# URI allowlist for HTTP loading (ignored when offline = true).
+# Each entry is a domain or domain prefix.  Wildcards are not supported.
+allowed_domains = [
+  # "json-schema.org",
+  # "spec.openapis.org",
+]
+
+# ── Code-generation targets ───────────────────────────────────────────────────
+[targets]
+# Rust ahead-of-time code-generation target.
+[targets.rust]
+enabled = true
+# Crate name written into the generated module-level doc comment.
+crate_name = "my-schema-types"
+# Derive macros added to every generated struct and enum.
+derives = ["Debug", "Clone", "serde::Serialize", "serde::Deserialize"]
+# Rename strategy for struct field names ("snake_case", "camelCase", "preserve").
+field_rename = "snake_case"
+# Emit #[non_exhaustive] on generated enums.
+non_exhaustive_enums = true
+
+# Runtime Plan target (Python / Node / WASM consumers).
+[targets.plan]
+enabled = true
+# Plan schema version to emit.  Must match the evaluator version bundled with
+# the Python wheel or Node package.
+version = "0.1"
+# Compress plan files with zstd.  Requires the `plan-zstd` feature flag.
+compress = false

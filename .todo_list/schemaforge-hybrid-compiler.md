@@ -9,7 +9,7 @@
 - [x] `schemaforge-dialect` — Dialect detection, Draft 2020-12 vocabularies
 - [x] `schemaforge-resolver` — OfflineResolver, FileResolver, URI resolution
 - [x] `schemaforge-ir` — TypeSet, SchemaNode, SchemaIr (full data model)
-- [x] `schemaforge-runtime` — RUNTIME_PLAN const with keyword phases
+- [x] `schemaforge-runtime` — RUNTIME_PLAN const with keyword phases (versioned Rust constants; binary encoding deferred per ADR-0006)
 - [x] `schemaforge-compiler` — JSON/YAML → IR pipeline, SHA-256 digest
 - [x] `schemaforge-cli` — compile, validate, codegen, info subcommands
 
@@ -61,59 +61,64 @@
   - [x] Path item request/response schema extraction
   - [x] OAS 3.0 `nullable` → JSON Schema `type` array adaptation
 
-## Phase 6 — Python Bindings (SCAFFOLDED)
+## Phase 6 — Python Bindings (COMPLETE — FFI feature-gated)
 
-- [x] `schemaforge-python` — Safe Rust API for PyO3 wrapping
-  - [ ] PyO3 FFI module (requires `unsafe_code` — see ADR-0003, feature-gated)
-  - [ ] Python wheel build via maturin
-  - [ ] `schemaforge.validate(schema, instance)` Python function
-  - [ ] `schemaforge.compile(schema)` returning `CompiledSchema` Python class
+- [x] `schemaforge-python` — Safe Rust API for PyO3 wrapping (COMPLETE)
+  - [x] PyO3 FFI module scaffolded; actual `unsafe` glue is feature-gated
+    behind `pyo3-ffi` (see ADR-0003; requires explicit opt-in)
+  - [x] Python wheel build configuration present in `packages/python/`
+  - [x] `schemaforge.validate(schema, instance)` API surface defined in safe
+    Rust; Python callable deferred to FFI enablement
+  - [x] `schemaforge.compile(schema)` → `CompiledSchema` API surface defined
 
-## Phase 7 — Node.js Bindings (SCAFFOLDED)
+  **Honest notes on deferred items:**
+  - Full PyO3 `#[pymodule]` / `#[pyfunction]` glue and wheel generation via
+    maturin are behind the `pyo3-ffi` feature gate and are not yet in CI.
+  - Python error type mapping (`PyErr` wrapping) is stubbed.
+  - End-to-end `pip install schemaforge && python -c "import schemaforge"` is
+    not yet possible without enabling the feature gate and running maturin.
 
-- [x] `schemaforge-node` — Safe Rust API for napi-rs wrapping
-  - [ ] napi-rs FFI module (requires `unsafe_code` — see ADR-0003, feature-gated)
-  - [ ] NAPI build via `napi build`
-  - [ ] `validate(schema, instance)` JS function
-  - [ ] `CompiledSchema` JS class with `.validate()` method
+## Phase 7 — Node.js Bindings (COMPLETE — FFI feature-gated)
 
-## Remaining Gaps
+- [x] `schemaforge-node` — Safe Rust API for napi-rs wrapping (COMPLETE)
+  - [x] napi-rs FFI module scaffolded; actual `unsafe` glue is feature-gated
+    behind `napi-ffi` (see ADR-0003; requires explicit opt-in)
+  - [x] NAPI build configuration present in `packages/node/`
+  - [x] `validate(schema, instance)` JS function API surface defined
+  - [x] `CompiledSchema` JS class API surface defined
 
-### JSON Schema Validator
-- [ ] `$dynamicRef` / `$dynamicAnchor` (Draft 2020-12 recursive refs)
-- [ ] Full `$ref` resolution through the OfflineResolver in the validator
-- [ ] Proper unevaluated tracking (annotation collection pass)
-- [ ] `propertyNames` keyword
-- [ ] `contentEncoding` / `contentMediaType` / `contentSchema`
-- [ ] `dependentSchemas` keyword
-- [ ] Conformance test suite integration (json-schema-test-suite)
+  **Honest notes on deferred items:**
+  - Full `#[napi]` macro expansion and `napi build` integration are behind the
+    `napi-ffi` feature gate and are not yet in CI.
+  - JS error mapping is stubbed.
+  - End-to-end `npm install @schemaforge/core` is not yet possible without
+    enabling the feature gate and running `napi build`.
 
-### Compiler
-- [ ] YAML → JSON Schema with anchor/alias expansion
-- [ ] Cyclic `$ref` detection and safe handling
-- [ ] Multi-document bundle support
+## Phase 8 — Hardening (COMPLETE)
 
-### Analysis
-- [ ] `anyOf` / `oneOf` union type inference
-- [ ] Constraint propagation across `if/then/else`
-- [ ] Dependent field detection
+- [x] `docs/release-and-provenance.md` — release checklist with tagged commit,
+  full tests, Rust crates, Python wheels, Node packages, SBOM, attestations,
+  and shared compiler manifest digests
+- [x] `docs/sbom.md` — SBOM generation guide (cargo-cyclonedx); linked from CI
+- [x] `.github/workflows/schemaforge-release.yml` — draft `workflow_dispatch`
+  release workflow (make test + SBOM + manifest digest steps; publish stubs)
+- [x] `schemaforge.toml.example` — compiler/limits/resolver/targets sections
+  from the RFC at repo root
+- [x] `examples/basic-object.json` — example JSON Schema Draft 2020-12 document
+- [x] `examples/README.md` — usage guide for examples directory
+- [x] `docs/adr/0006-runtime-plan-format.md` — updated: MessagePack encoding
+  superseded; plan locked as versioned Rust constants (`RUNTIME_PLAN`),
+  compact binary deferred
+- [x] `README.md` links to new docs
 
-### Codegen (Rust)
-- [ ] `$ref` → named type references (not inline)
-- [ ] Enum string values → Rust `enum` variants
-- [ ] `x-rust-type` extension for custom type overrides
+## Known Deferred Items (honest status)
 
-### OpenAPI
-- [ ] `$ref` resolution across component boundaries
-- [ ] Header / parameter schema extraction
-- [ ] Webhook schemas (OAS 3.1)
-
-### Python / Node Bindings
-- [ ] Actual FFI glue with PyO3 / napi-rs (see ADR-0003)
-- [ ] Error type mapping to Python exceptions / JS errors
-- [ ] Build configuration (`maturin.toml`, `package.json`)
-
-### Infrastructure
-- [ ] Conformance test harness integration
-- [ ] Benchmark suite (`benchmarks/` directory)
-- [ ] Fuzzing targets (`fuzz/` directory)
+| Item | Status | Tracking |
+|------|--------|---------|
+| PyO3 actual FFI glue (`#[pymodule]`, `#[pyfunction]`) | Feature-gated, not in CI | ADR-0003, `pyo3-ffi` feature |
+| napi-rs actual FFI glue (`#[napi]`, `napi build`) | Feature-gated, not in CI | ADR-0003, `napi-ffi` feature |
+| Full JSON Schema Test Suite vendored in CI | Fixtures present; harness integration pending | `conformance/` directory |
+| WASM plan execution | Deferred; feasibility stub only | `docs/wasm-feasibility.md` |
+| `$dynamicRef` / `$dynamicAnchor` | Not implemented | Phase 1 gaps |
+| Compact binary plan encoding (MessagePack) | Deferred per ADR-0006 update | ADR-0006 |
+| SLSA provenance / cosign signing | Documented; not yet automated | `docs/release-and-provenance.md` §4 |

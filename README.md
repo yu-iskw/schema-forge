@@ -101,7 +101,14 @@ make clean      # Remove build artefacts
 - `docs/rfc/0001-schemaforge-hybrid-compiler.md` — architecture RFC
 - `docs/adr/` — architecture decision records
 - `docs/threat-model.md` — security threat model
-- `docs/wasm-feasibility.md` — deferred WASM RFC stub (Phase 7)
+- `docs/wasm-feasibility.md` — deferred WASM feasibility stub
+- `docs/release-and-provenance.md` — release checklist, SBOM, and attestation guide
+- `docs/sbom.md` — how to generate a CycloneDX SBOM for the workspace
+
+## Examples
+
+- `examples/` — JSON Schema example files and usage guide
+- `schemaforge.toml.example` — annotated project-level compiler configuration
 
 ## Quality Guardrails
 
