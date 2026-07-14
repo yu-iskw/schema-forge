@@ -18,12 +18,16 @@ pub(crate) mod core;
 pub(crate) mod unevaluated;
 pub(crate) mod validation;
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use regex::Regex;
 use schemaforge_formats::FormatRegistry;
 use serde_json::{Map, Value};
 use thiserror::Error;
+
+/// Maximum schema evaluation depth before aborting with an error.
+const MAX_DEPTH: u32 = 128;
 
 /// Error returned when a schema cannot be compiled.
 #[derive(Debug, Error)]
@@ -124,7 +128,8 @@ impl Validator {
     ///
     /// # Errors
     ///
-    /// Returns [`SchemaError`] when the schema is invalid.
+    /// Returns [`SchemaError`] when the schema is invalid or contains an
+    /// invalid regular expression in a `pattern` or `patternProperties` key.
     pub fn new(schema: &Value, options: ValidationOptions) -> Result<Self, SchemaError> {
         let mut formats = FormatRegistry::with_defaults();
         if options.assert_formats {
@@ -132,7 +137,7 @@ impl Validator {
         }
         let dynamic_anchors = collect_dynamic_anchors(schema);
         let mut patterns = HashMap::new();
-        collect_patterns_recursive(schema, &mut patterns);
+        collect_patterns_recursive(schema, &mut patterns)?;
         Ok(Self {
             schema: schema.clone(),
             options,
@@ -147,9 +152,15 @@ impl Validator {
     ///
     /// Patterns from the added schema are precompiled and merged into the
     /// validator's pattern cache so they are available during validation.
-    pub fn add_schema(&mut self, id: impl Into<String>, schema: Value) {
-        collect_patterns_recursive(&schema, &mut self.patterns);
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchemaError`] when the added schema contains an invalid
+    /// regular expression in a `pattern` or `patternProperties` key.
+    pub fn add_schema(&mut self, id: impl Into<String>, schema: Value) -> Result<(), SchemaError> {
+        collect_patterns_recursive(&schema, &mut self.patterns)?;
         self.registry.insert(id.into(), schema);
+        Ok(())
     }
 
     /// Validate `instance` against the compiled schema.
@@ -164,6 +175,7 @@ impl Validator {
             root_schema: &self.schema,
             dynamic_anchors: &self.dynamic_anchors,
             patterns: &self.patterns,
+            depth: Cell::new(0),
         };
         validate_schema(&self.schema, instance, "", &ctx)
     }
@@ -209,37 +221,58 @@ fn collect_anchors_recursive(schema: &Value, anchors: &mut HashMap<String, Value
 
 /// Walk the schema tree and precompile every regex found in `pattern` and
 /// `patternProperties` keys, storing them in `map` keyed by pattern string.
-fn collect_patterns_recursive(schema: &Value, map: &mut HashMap<String, Regex>) {
+///
+/// Returns `Err` immediately when any pattern fails to compile, so the caller
+/// can surface a [`SchemaError`] rather than silently ignoring the invalid regex.
+fn collect_patterns_recursive(
+    schema: &Value,
+    map: &mut HashMap<String, Regex>,
+) -> Result<(), SchemaError> {
     match schema {
         Value::Object(obj) => collect_patterns_from_object(obj, map),
         Value::Array(arr) => {
             for item in arr {
-                collect_patterns_recursive(item, map);
+                collect_patterns_recursive(item, map)?;
             }
+            Ok(())
         }
-        _ => {}
+        _ => Ok(()),
     }
 }
 
-fn collect_patterns_from_object(obj: &Map<String, Value>, map: &mut HashMap<String, Regex>) {
-    register_pattern(obj.get("pattern").and_then(Value::as_str), map);
+fn collect_patterns_from_object(
+    obj: &Map<String, Value>,
+    map: &mut HashMap<String, Regex>,
+) -> Result<(), SchemaError> {
+    register_pattern(obj.get("pattern").and_then(Value::as_str), map)?;
     if let Some(pp) = obj.get("patternProperties").and_then(Value::as_object) {
         for k in pp.keys() {
-            register_pattern(Some(k.as_str()), map);
+            register_pattern(Some(k.as_str()), map)?;
         }
     }
     for v in obj.values() {
-        collect_patterns_recursive(v, map);
+        collect_patterns_recursive(v, map)?;
     }
+    Ok(())
 }
 
-fn register_pattern(pattern: Option<&str>, map: &mut HashMap<String, Regex>) {
-    let Some(p) = pattern else { return };
+fn register_pattern(
+    pattern: Option<&str>,
+    map: &mut HashMap<String, Regex>,
+) -> Result<(), SchemaError> {
+    let Some(p) = pattern else { return Ok(()) };
     if map.contains_key(p) {
-        return;
+        return Ok(());
     }
-    if let Ok(re) = Regex::new(p) {
-        map.insert(p.to_owned(), re);
+    match Regex::new(p) {
+        Ok(re) => {
+            map.insert(p.to_owned(), re);
+            Ok(())
+        }
+        Err(e) => Err(SchemaError::InvalidKeyword {
+            keyword: "pattern".to_owned(),
+            reason: format!("invalid regex `{p}`: {e}"),
+        }),
     }
 }
 
@@ -254,6 +287,10 @@ pub(crate) struct ValidationContext<'a> {
     pub(crate) dynamic_anchors: &'a HashMap<String, Value>,
     /// Pre-compiled regexes keyed by pattern string.
     pub(crate) patterns: &'a HashMap<String, Regex>,
+    /// Current evaluation nesting depth — prevents stack overflows on cyclic
+    /// schemas such as `{"$ref": "#"}`.  Uses interior mutability so the
+    /// signature of `validate_schema` stays `&ValidationContext`.
+    pub(crate) depth: Cell<u32>,
 }
 
 /// Validate `instance` against `schema` at `path`.
@@ -263,7 +300,16 @@ pub(crate) fn validate_schema(
     path: &str,
     ctx: &ValidationContext<'_>,
 ) -> ValidationOutput {
-    match schema {
+    let depth = ctx.depth.get();
+    if depth >= MAX_DEPTH {
+        return ValidationOutput::fail(ValidationError::new(
+            path,
+            path,
+            format!("schema evaluation exceeded maximum nesting depth of {MAX_DEPTH}"),
+        ));
+    }
+    ctx.depth.set(depth + 1);
+    let out = match schema {
         Value::Bool(false) => ValidationOutput::fail(ValidationError::new(
             path,
             path,
@@ -271,7 +317,9 @@ pub(crate) fn validate_schema(
         )),
         Value::Object(obj) => validate_object_schema(obj, instance, path, ctx),
         _ => ValidationOutput::ok(),
-    }
+    };
+    ctx.depth.set(depth);
+    out
 }
 
 fn validate_object_schema(
@@ -584,5 +632,88 @@ mod tests {
         let schema = json!({"$dynamicRef": "#missing-anchor"});
         let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
         assert!(!v.validate(&json!("anything")).is_valid());
+    }
+
+    // ── Recursion / cycle guards ──────────────────────────────────────────────
+
+    #[test]
+    fn cyclic_ref_does_not_stack_overflow() {
+        // {"$ref": "#"} recurses into the root schema forever without a depth
+        // budget.  The validator must return an error instead of overflowing.
+        let schema = json!({"$ref": "#"});
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&json!("anything"));
+        assert!(
+            !out.is_valid(),
+            "cyclic $ref should produce a validation error, not succeed"
+        );
+    }
+
+    #[test]
+    fn deep_all_of_does_not_stack_overflow() {
+        // Build an allOf chain nested MAX_DEPTH + a few levels beyond the limit.
+        let limit = MAX_DEPTH as usize + 5;
+        let mut schema = json!({"type": "string"});
+        for _ in 0..limit {
+            schema = json!({"allOf": [schema]});
+        }
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&json!("hello"));
+        // Whether valid or error, the important thing is no stack overflow.
+        let _ = out;
+    }
+
+    #[test]
+    fn deep_all_of_within_budget_is_valid() {
+        // An allOf chain that stays inside MAX_DEPTH must validate normally.
+        let mut schema = json!({"type": "string"});
+        for _ in 0..10_usize {
+            schema = json!({"allOf": [schema]});
+        }
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        assert!(v.validate(&json!("hello")).is_valid());
+        assert!(!v.validate(&json!(42)).is_valid());
+    }
+
+    // ── Invalid pattern guards ────────────────────────────────────────────────
+
+    #[test]
+    fn invalid_pattern_rejected_at_build_time() {
+        // An invalid regex must cause Validator::new to return Err.
+        let schema = json!({"pattern": "[invalid"});
+        let result = Validator::new(&schema, ValidationOptions::default());
+        assert!(
+            result.is_err(),
+            "Validator::new should fail on invalid pattern"
+        );
+    }
+
+    #[test]
+    fn invalid_pattern_in_pattern_properties_rejected_at_build_time() {
+        let schema = json!({"patternProperties": {"[invalid": {"type": "string"}}});
+        let result = Validator::new(&schema, ValidationOptions::default());
+        assert!(
+            result.is_err(),
+            "Validator::new should fail on invalid patternProperties key"
+        );
+    }
+
+    #[test]
+    fn valid_pattern_still_works() {
+        let schema = json!({"type": "string", "pattern": "^[a-z]+$"});
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        assert!(v.validate(&json!("hello")).is_valid());
+        assert!(!v.validate(&json!("Hello")).is_valid());
+    }
+
+    #[test]
+    fn add_schema_fails_on_invalid_pattern() {
+        let root = json!({"type": "string"});
+        let mut v = Validator::new(&root, ValidationOptions::default()).unwrap();
+        let bad = json!({"pattern": "[bad"});
+        assert!(
+            v.add_schema("urn:bad", bad).is_err(),
+            "add_schema should fail on invalid pattern"
+        );
     }
 }

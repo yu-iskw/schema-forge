@@ -157,6 +157,13 @@ fn apply_pattern(
         return;
     };
     let Some(re) = ctx.patterns.get(pattern.as_str()) else {
+        // Pattern keyword is present but the regex is absent from the compiled
+        // cache — treat as a validation failure (fail-closed).
+        out.merge(ValidationOutput::fail(ValidationError::new(
+            path,
+            format!("{path}/pattern"),
+            format!("pattern `{pattern}` is not a valid regular expression"),
+        )));
         return;
     };
     if !re.is_match(s) {

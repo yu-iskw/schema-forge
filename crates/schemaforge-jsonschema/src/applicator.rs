@@ -161,6 +161,13 @@ fn apply_pattern_properties(
     };
     for (pattern, schema) in pat_props {
         let Some(re) = ctx.patterns.get(pattern.as_str()) else {
+            // Pattern key is present in patternProperties but not compiled —
+            // fail-closed: the schema is invalid.
+            out.merge(ValidationOutput::fail(ValidationError::new(
+                path,
+                format!("{path}/patternProperties"),
+                format!("patternProperties key `{pattern}` is not a valid regular expression"),
+            )));
             continue;
         };
         for (key, value) in inst {
