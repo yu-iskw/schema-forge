@@ -8,5 +8,7 @@ MODULE_DIR="$(dirname "${SCRIPT_DIR}")"
 
 cd "${MODULE_DIR}"
 
-trunk check -a
+if command -v trunk &>/dev/null; then
+    trunk check -a
+fi
 cargo clippy --workspace --all-targets --all-features -- -D warnings
