@@ -19,6 +19,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+schemaforge-compiler.workspace = true
 
 [lints]
 workspace = true

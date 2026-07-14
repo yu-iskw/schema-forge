@@ -69,7 +69,7 @@ fn base_codegen_hints(node: &SchemaNode) -> Vec<String> {
     if node.types.object && !node.properties.is_empty() {
         hints.push("generates struct".to_owned());
     }
-    if !node.enum_values.is_empty() {
+    if node.enum_values.as_ref().is_some_and(|v| !v.is_empty()) {
         hints.push("generates enum".to_owned());
     }
     if node.types.array {

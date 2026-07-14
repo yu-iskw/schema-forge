@@ -240,7 +240,12 @@ pub struct SchemaNode {
     pub additional_properties: Option<Box<SchemaNode>>,
     pub items: Option<Box<SchemaNode>>,
     pub prefix_items: Vec<SchemaNode>,
-    pub enum_values: Vec<Value>,
+    /// Values explicitly enumerated by the `enum` keyword.
+    ///
+    /// `None` means the keyword was absent.  `Some(vec)` means the keyword was
+    /// present; an empty inner `Vec` (i.e. `Some([])`) means the schema can
+    /// never be satisfied.
+    pub enum_values: Option<Vec<Value>>,
     pub const_value: Option<Value>,
     pub title: Option<String>,
     pub description: Option<String>,
@@ -264,7 +269,7 @@ impl Default for SchemaNode {
             additional_properties: None,
             items: None,
             prefix_items: Vec::new(),
-            enum_values: Vec::new(),
+            enum_values: None,
             const_value: None,
             title: None,
             description: None,
@@ -299,9 +304,19 @@ impl SchemaNode {
     }
 
     /// Returns `true` when the schema can never be satisfied.
+    ///
+    /// A schema is unsatisfiable when:
+    /// - An explicitly empty `enum` is present (`"enum": []`), or
+    /// - No JSON type is accepted, no `const` fallback, and no `enum` provides
+    ///   alternative values.
     #[must_use]
-    pub const fn is_never(&self) -> bool {
-        self.types.is_empty() && self.enum_values.is_empty() && self.const_value.is_none()
+    pub fn is_never(&self) -> bool {
+        // An explicitly empty enum means no value can match.
+        if self.enum_values.as_ref().is_some_and(Vec::is_empty) {
+            return true;
+        }
+        // Empty type set with nothing else to match against.
+        self.types.is_empty() && self.const_value.is_none() && self.enum_values.is_none()
     }
 
     /// Return descriptors for directly declared JSON object properties.

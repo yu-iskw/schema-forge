@@ -1,3 +1,4 @@
+use schemaforge_compiler::Compiler;
 use schemaforge_ir::{SchemaIr, SchemaNode, TypeSet};
 
 use crate::names::{to_pascal_case, to_snake_case};
@@ -482,6 +483,50 @@ fn nested_structs_with_colliding_names_get_unique_type_names() {
     assert_eq!(
         struct_count, 3,
         "expected exactly 3 struct definitions, got {struct_count} in:\n{code}"
+    );
+}
+
+// ── $ref + constraint codegen ─────────────────────────────────────────────────
+
+#[test]
+fn ref_with_min_length_sibling_generates_string_not_value() {
+    // A schema of the form {$ref: ..., minLength: 1} produces an allOf node
+    // after compilation.  The codegen must resolve that to `String` (based on
+    // the inferred type) rather than falling through to `serde_json::Value`.
+    let mut c = Compiler::new();
+    let src = r##"{
+        "$defs": {"S": {"type": "string"}},
+        "$ref": "#/$defs/S",
+        "minLength": 1
+    }"##;
+    let ir = c.compile_json("test://ref-minlength.json", src).unwrap();
+    let code = generate(&ir, &CodegenOptions::default()).unwrap();
+    assert!(
+        code.contains("pub type Root = String;"),
+        "expected String alias for $ref+minLength, got:\n{code}"
+    );
+    assert!(
+        !code.contains("serde_json::Value"),
+        "$ref+minLength must not emit serde_json::Value:\n{code}"
+    );
+}
+
+#[test]
+fn empty_enum_codegen_generates_never_type() {
+    // An empty `"enum": []` schema is never satisfiable; codegen must emit an
+    // uninhabited enum type, not a `serde_json::Value` alias.
+    let mut c = Compiler::new();
+    let ir = c
+        .compile_json("test://empty-enum.json", r#"{"enum":[]}"#)
+        .unwrap();
+    let code = generate(&ir, &CodegenOptions::default()).unwrap();
+    assert!(
+        code.contains("pub enum Root {}"),
+        "expected uninhabited enum for empty enum schema, got:\n{code}"
+    );
+    assert!(
+        !code.contains("serde_json::Value"),
+        "empty enum must not emit serde_json::Value:\n{code}"
     );
 }
 

@@ -685,6 +685,7 @@ version = "0.1.0"
 dependencies = [
  "indexmap",
  "schemaforge-analysis",
+ "schemaforge-compiler",
  "schemaforge-ir",
  "serde_json",
  "thiserror",

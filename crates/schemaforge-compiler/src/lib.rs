@@ -290,8 +290,19 @@ const UNSUPPORTED_KEYWORDS: &[&str] = &[
     // honesty until dynamic scoping is represented in the IR.
     "$dynamicRef",
     "$dynamicAnchor",
+    // Recursive reference applicators (Draft 2019-09) — not yet lowered.
+    // These carry runtime anchor-resolution semantics that cannot be
+    // represented in the current finite IR.
+    "$recursiveRef",
+    "$recursiveAnchor",
     // Property dependency assertions (Draft 2019-09 / 2020-12).
     "dependentRequired",
+    // Legacy Draft 4 / Draft 7 property dependencies keyword.  It conflates
+    // two distinct semantics (property-presence implies required-properties
+    // AND property-presence implies a sub-schema) which the IR does not yet
+    // represent.  Reject explicitly so schemas using the old keyword are not
+    // silently mis-compiled.
+    "dependencies",
     // Content annotations — not assertions in standard validators, but they
     // carry semantics (media type, encoding, schema) that the IR cannot yet
     // represent faithfully.
@@ -314,7 +325,20 @@ fn check_unsupported_keywords(obj: &serde_json::Map<String, Value>) -> Result<()
 
 /// Schema keywords that do not add applicator or assertion constraints and
 /// can be ignored when deciding whether a `$ref` has meaningful siblings.
-const REF_PASSTHROUGH_KEYS: &[&str] = &["$ref", "$id", "$anchor", "$schema", "$defs", "$comment"];
+///
+/// Annotation-only keywords (`title`, `description`) are included here so that
+/// a `$ref` accompanied by only documentation metadata still takes the
+/// short-circuit path and avoids an unnecessary `allOf` wrapper.
+const REF_PASSTHROUGH_KEYS: &[&str] = &[
+    "$ref",
+    "$id",
+    "$anchor",
+    "$schema",
+    "$defs",
+    "$comment",
+    "title",
+    "description",
+];
 
 fn lower_object_schema(
     obj: &serde_json::Map<String, Value>,
@@ -390,7 +414,7 @@ fn extract_types(obj: &serde_json::Map<String, Value>, node: &mut SchemaNode) {
         node.types = TypeSet::from_json(t);
     }
     if let Some(vals) = obj.get("enum").and_then(Value::as_array) {
-        node.enum_values.clone_from(vals);
+        node.enum_values = Some(vals.clone());
     }
     if let Some(c) = obj.get("const") {
         node.const_value = Some(c.clone());
@@ -1000,6 +1024,105 @@ mod tests {
         assert_unsupported(
             "contentEncoding",
             r#"{"type":"string","contentEncoding":"base64"}"#,
+        );
+    }
+
+    #[test]
+    fn compile_recursive_ref_is_unsupported() {
+        assert_unsupported(
+            "$recursiveRef",
+            r##"{"$recursiveRef":"#","type":"object"}"##,
+        );
+    }
+
+    #[test]
+    fn compile_recursive_anchor_is_unsupported() {
+        assert_unsupported(
+            "$recursiveAnchor",
+            r#"{"$recursiveAnchor":true,"type":"object"}"#,
+        );
+    }
+
+    #[test]
+    fn compile_dependencies_is_unsupported() {
+        assert_unsupported(
+            "dependencies",
+            r#"{"type":"object","dependencies":{"credit_card":["billing_address"]}}"#,
+        );
+    }
+
+    // ── $ref + annotation-only siblings (description/title) ──────────────────
+
+    #[test]
+    fn compile_ref_with_description_alone_still_shortcuts() {
+        // A $ref with only a `description` sibling must still take the
+        // short-circuit path and NOT produce an allOf wrapper, because
+        // `description` is a pure annotation with no assertion semantics.
+        let mut c = Compiler::new();
+        let src = r##"{
+            "$defs": {"S": {"type": "string"}},
+            "$ref": "#/$defs/S",
+            "description": "A short description"
+        }"##;
+        let ir = c.compile_json("test://ref-desc.json", src).unwrap();
+        assert!(
+            ir.root.all_of.is_empty(),
+            "pure $ref with only description must not produce allOf"
+        );
+        assert!(
+            ir.root.types.string,
+            "root must be lowered from the $ref target (string)"
+        );
+    }
+
+    #[test]
+    fn compile_ref_with_title_alone_still_shortcuts() {
+        // Same shortcut behaviour for `title` annotation.
+        let mut c = Compiler::new();
+        let src = r##"{
+            "$defs": {"S": {"type": "integer"}},
+            "$ref": "#/$defs/S",
+            "title": "An integer field"
+        }"##;
+        let ir = c.compile_json("test://ref-title.json", src).unwrap();
+        assert!(
+            ir.root.all_of.is_empty(),
+            "pure $ref with only title must not produce allOf"
+        );
+        assert!(
+            ir.root.types.integer,
+            "root must be lowered from the $ref target (integer)"
+        );
+    }
+
+    // ── Empty enum ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn compile_empty_enum_preserves_enum_present_flag() {
+        // `{"enum": []}` must compile to a node where enum_values is Some([]),
+        // not None — so that downstream code can distinguish "enum absent"
+        // from "enum present but empty".
+        let mut c = Compiler::new();
+        let ir = c
+            .compile_json("test://empty-enum.json", r#"{"enum":[]}"#)
+            .unwrap();
+        assert!(
+            ir.root.enum_values.as_ref().is_some_and(Vec::is_empty),
+            "empty enum must be Some([]), got {:?}",
+            ir.root.enum_values
+        );
+    }
+
+    #[test]
+    fn compile_empty_enum_is_never() {
+        // `{"enum": []}` is a schema that can never be satisfied.
+        let mut c = Compiler::new();
+        let ir = c
+            .compile_json("test://empty-enum.json", r#"{"enum":[]}"#)
+            .unwrap();
+        assert!(
+            ir.root.is_never(),
+            "empty enum schema must be classified as never"
         );
     }
 

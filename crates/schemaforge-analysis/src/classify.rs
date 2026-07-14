@@ -53,7 +53,18 @@ const fn has_union(node: &SchemaNode) -> bool {
 }
 
 fn is_fully_unconstrained(node: &SchemaNode) -> bool {
-    node.types == TypeSet::any() && node.properties.is_empty()
+    // A node is unconstrained only when every constraint field is absent.
+    // Note: any_of and one_of are already handled by has_union() before this
+    // function is reached, so they do not need an explicit check here.
+    node.types == TypeSet::any()
+        && node.properties.is_empty()
+        && node.all_of.is_empty()
+        && node.not.is_none()
+        && node.items.is_none()
+        && node.prefix_items.is_empty()
+        && node.defs.is_empty()
+        && node.enum_values.is_none()
+        && node.const_value.is_none()
 }
 
 fn classify_union(node: &SchemaNode) -> Representability {
@@ -266,6 +277,63 @@ mod tests {
     fn unsupported_never() {
         let node = SchemaNode::boolean_schema(false);
         assert_eq!(classify(&node), Representability::Unsupported);
+    }
+
+    #[test]
+    fn unsupported_empty_enum() {
+        // An explicitly empty enum (Some([])) means the schema is never
+        // satisfiable — classify must return Unsupported (via is_never).
+        let node = SchemaNode {
+            enum_values: Some(vec![]),
+            ..SchemaNode::default()
+        };
+        assert_eq!(classify(&node), Representability::Unsupported);
+    }
+
+    #[test]
+    fn dynamic_schema_with_all_of_is_not_unconstrained() {
+        // A node produced by $ref + constraint siblings carries a non-empty
+        // all_of vec.  is_fully_unconstrained must return false so it is NOT
+        // misclassified as Dynamic (which would produce serde_json::Value).
+        let sub = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            ..SchemaNode::default()
+        };
+        let node = SchemaNode {
+            all_of: vec![sub],
+            ..SchemaNode::default()
+        };
+        // Must NOT be Dynamic — the all_of constrains the schema.
+        assert_ne!(classify(&node), Representability::Dynamic);
+    }
+
+    #[test]
+    fn dynamic_schema_with_not_is_not_unconstrained() {
+        let node = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            not: Some(Box::new(SchemaNode::default())),
+            ..SchemaNode::default()
+        };
+        assert_ne!(classify(&node), Representability::Dynamic);
+    }
+
+    #[test]
+    fn dynamic_schema_with_enum_values_is_not_unconstrained() {
+        // A node with Some([...]) enum_values is constrained.
+        let node = SchemaNode {
+            enum_values: Some(vec![serde_json::json!("a")]),
+            ..SchemaNode::default()
+        };
+        assert_ne!(classify(&node), Representability::Dynamic);
+    }
+
+    #[test]
+    fn dynamic_schema_with_const_value_is_not_unconstrained() {
+        let node = SchemaNode {
+            const_value: Some(serde_json::json!(42)),
+            ..SchemaNode::default()
+        };
+        assert_ne!(classify(&node), Representability::Dynamic);
     }
 
     #[test]

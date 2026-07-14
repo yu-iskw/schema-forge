@@ -112,11 +112,16 @@ fn analyse_at(node: &SchemaNode, path: &str) -> Result<InferredNode, AnalysisErr
 }
 
 fn narrow_with_enum(node: &SchemaNode, mut types: TypeSet) -> TypeSet {
-    if node.enum_values.is_empty() {
+    let Some(ref vals) = node.enum_values else {
         return types;
+    };
+    // Empty enum is caught by is_never() before this point, but guard here
+    // defensively: no values means nothing can match.
+    if vals.is_empty() {
+        return TypeSet::none();
     }
     let mut narrowed = TypeSet::none();
-    for v in &node.enum_values {
+    for v in vals {
         if v.is_null() && types.null {
             narrowed.null = true;
         } else if v.is_boolean() && types.boolean {
@@ -301,11 +306,14 @@ fn check_required_additions(a: &SchemaNode, b: &SchemaNode, changes: &mut Vec<St
 }
 
 fn check_enum_restrictions(a: &SchemaNode, b: &SchemaNode, changes: &mut Vec<String>) {
-    if b.enum_values.is_empty() || a.enum_values.is_empty() {
+    let (Some(a_vals), Some(b_vals)) = (&a.enum_values, &b.enum_values) else {
+        return;
+    };
+    if a_vals.is_empty() || b_vals.is_empty() {
         return;
     }
-    for val in &a.enum_values {
-        if !b.enum_values.contains(val) {
+    for val in a_vals {
+        if !b_vals.contains(val) {
             changes.push(format!("removed enum value `{val}`"));
         }
     }
