@@ -3,7 +3,8 @@
 //! The default [`OfflineResolver`] resolves schemas from an in-memory registry
 //! only. A [`FileResolver`] additionally loads schemas from the filesystem.
 //! [`NetworkResolver`] always denies network access (policy: network=deny).
-//! Both implement the [`Resolver`] trait used by the compiler.
+//! Both implement the [`Resolver`] trait used by the CLI lock workflow and
+//! future external-ref consumers.
 //!
 //! A [`LockFile`] (serialised to `schemaforge.lock.toml`) records every
 //! resolved external URI so that builds remain reproducible.
