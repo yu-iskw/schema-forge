@@ -24,7 +24,7 @@ use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 
-use crate::{ValidationContext, ValidationOutput, validate_schema};
+use crate::{ValidationContext, ValidationError, ValidationOutput, validate_schema};
 
 /// Apply unevaluated vocabulary keywords.
 pub(crate) fn apply(
@@ -36,6 +36,31 @@ pub(crate) fn apply(
 ) {
     apply_unevaluated_properties(obj, instance, path, ctx, out);
     apply_unevaluated_items(obj, instance, path, ctx, out);
+}
+
+/// Fail closed when a branch-ref pre-pass hit [`MAX_BRANCH_REF_DEPTH`].
+///
+/// Clears and returns `true` when the flag was set so callers abort instead of
+/// treating an incomplete evaluated set as authoritative.
+fn take_branch_depth_exceeded(
+    path: &str,
+    keyword: &str,
+    ctx: &ValidationContext<'_>,
+    out: &mut ValidationOutput,
+) -> bool {
+    if !ctx.branch_depth_exceeded.get() {
+        return false;
+    }
+    ctx.branch_depth_exceeded.set(false);
+    out.merge(ValidationOutput::fail(ValidationError::new(
+        path,
+        format!("{path}/{keyword}"),
+        format!(
+            "{keyword} analysis aborted: \
+             schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
+        ),
+    )));
+    true
 }
 
 fn apply_unevaluated_properties(
@@ -51,21 +76,13 @@ fn apply_unevaluated_properties(
     };
     let explicit = crate::collect_known_property_names(obj);
     let has_additional = obj.contains_key("additionalProperties");
+    // Fresh flag per pass: the Cell is shared across nested validate_schema
+    // calls, so a prior depth abort must not poison this walk.
+    ctx.branch_depth_exceeded.set(false);
     // Build once — not per instance key — so large objects don't re-walk
     // allOf/anyOf/oneOf branches on every property.
     let branch_props = applicator_branch_evaluated_properties(obj, instance, ctx);
-    // Fail closed: if the branch walk exceeded the depth limit, the evaluated
-    // set is incomplete.  Silently skipping unevaluated properties would
-    // produce false negatives, so emit a depth error instead.
-    if ctx.branch_depth_exceeded.get() {
-        out.merge(crate::ValidationOutput::fail(crate::ValidationError::new(
-            path,
-            format!("{path}/unevaluatedProperties"),
-            format!(
-                "unevaluatedProperties analysis aborted: \
-                 schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
-            ),
-        )));
+    if take_branch_depth_exceeded(path, "unevaluatedProperties", ctx, out) {
         return;
     }
     for (key, value) in inst {
@@ -305,10 +322,13 @@ fn apply_unevaluated_items(
         return;
     };
 
+    // Fresh flag per pass (see apply_unevaluated_properties).
+    ctx.branch_depth_exceeded.set(false);
     let (effective_prefix_len, has_items) = items_eval_range(obj, instance, ctx);
     // `items` keyword at a reachable depth evaluates every remaining index, so
     // unevaluatedItems is a no-op regardless of depth.
     if has_items {
+        ctx.branch_depth_exceeded.set(false);
         return;
     }
 
@@ -316,18 +336,7 @@ fn apply_unevaluated_items(
     // don't re-walk allOf/anyOf/$ref for every index.
     let contains_schemas = collect_contains_schemas(obj, instance, ctx);
 
-    // Fail closed: if the branch walk exceeded the depth limit the evaluated
-    // ranges/contains set is incomplete and silently skipping items would
-    // produce false negatives.
-    if ctx.branch_depth_exceeded.get() {
-        out.merge(crate::ValidationOutput::fail(crate::ValidationError::new(
-            path,
-            format!("{path}/unevaluatedItems"),
-            format!(
-                "unevaluatedItems analysis aborted: \
-                 schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
-            ),
-        )));
+    if take_branch_depth_exceeded(path, "unevaluatedItems", ctx, out) {
         return;
     }
 

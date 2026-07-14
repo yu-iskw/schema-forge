@@ -161,17 +161,11 @@ impl Validator {
         let mut anchors_by_doc: HashMap<String, HashMap<String, Value>> = HashMap::new();
         let mut registry = HashMap::new();
         if !options.base_uri.is_empty() {
-            // Normalize the base_uri key so that a URI with dot-segments such
-            // as "https://example.com/./schemas/root.json" maps to the same
-            // registry entry as its canonical form.  Lookups via $ref always
-            // go through resolve_uri → normalize_path_in_uri, so the insert
-            // key must match the normalized form the lookup produces.
+            // Normalize so insert keys match $ref lookups (build_registry_key
+            // → resolve_uri → normalize_uri).
             let norm_base = schemaforge_resolver::normalize_uri(options.base_uri.clone());
             anchors_by_doc.insert(norm_base.clone(), root_anchors.clone());
-            // Insert the root schema under the normalized base_uri so that
-            // absolute self-refs such as
-            // `"$ref": "https://example.com/schema.json#anchor"` resolve
-            // against the root document rather than failing with "not found".
+            // Root under base_uri so absolute self-refs resolve to this doc.
             registry.insert(norm_base, schema.clone());
         }
         anchors_by_doc.insert(String::new(), root_anchors);
@@ -206,10 +200,7 @@ impl Validator {
     /// regular expression, unsupported keywords, or duplicate `$anchor`
     /// names within the same document.
     pub fn add_schema(&mut self, id: impl Into<String>, schema: Value) -> Result<(), SchemaError> {
-        // Normalize the id before storing so that a URI with dot-segments such
-        // as "file:///tmp/./schema.json" maps to the same key as its canonical
-        // form.  Lookups through $ref always produce a normalized key via
-        // resolve_uri → normalize_path_in_uri, so the insert key must match.
+        // Same normalize_uri keying as Validator::new / $ref lookup.
         let norm_id = schemaforge_resolver::normalize_uri(id.into());
         check_for_unsupported_keywords(&schema)?;
         collect_patterns_recursive(&schema, &mut self.patterns)?;

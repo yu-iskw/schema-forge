@@ -87,10 +87,12 @@ pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Opt
 }
 
 fn build_registry_key(ref_uri: &str, base_uri: &str) -> String {
+    // Match OfflineResolver / FileResolver: resolve, then normalize_uri so
+    // registry keys agree with Validator::new / add_schema inserts (dot
+    // segments, trailing `#`, and Windows file:// casefold).
     let resolved = schemaforge_resolver::resolve_uri(base_uri, ref_uri);
-    schemaforge_resolver::split_uri_fragment(&resolved)
-        .0
-        .to_owned()
+    let (key, _) = schemaforge_resolver::split_uri_fragment(&resolved);
+    schemaforge_resolver::normalize_uri(key.to_owned())
 }
 
 // ── JSON Pointer resolution ───────────────────────────────────────────────────
