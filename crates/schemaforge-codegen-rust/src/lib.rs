@@ -93,9 +93,12 @@ pub fn generate(ir: &SchemaIr, options: &CodegenOptions) -> Result<String, Codeg
         reason: e.to_string(),
     })?;
     let mut buf = String::new();
+    // Seed the allocator with "Root" so that any $def named "Root" is
+    // automatically disambiguated and does not collide with the root struct.
+    let mut alloc: HashSet<String> = HashSet::from(["Root".to_owned()]);
     emit_header(&mut buf, options)?;
-    emit_defs(&ir.root, options, &mut buf)?;
-    generate_node(&ir.root, &inferred, "Root", options, &mut buf)?;
+    emit_defs(&ir.root, options, &mut buf, &mut alloc)?;
+    generate_node(&ir.root, &inferred, "Root", options, &mut buf, &mut alloc)?;
     check_size_limit(&buf, options)?;
     Ok(buf)
 }
@@ -139,16 +142,16 @@ fn emit_defs(
     node: &SchemaNode,
     options: &CodegenOptions,
     buf: &mut String,
+    alloc: &mut HashSet<String>,
 ) -> Result<(), CodegenError> {
-    let mut used_names: HashSet<String> = HashSet::new();
     for (idx, (def_name, def_node)) in node.defs.iter().enumerate() {
         let raw_name = sanitize_type_name(def_name, idx);
-        let type_name = unique_name(&raw_name, &mut used_names);
+        let type_name = unique_name(&raw_name, alloc);
         let inferred = analyse(def_node).map_err(|e| CodegenError::Unsupported {
             path: format!("$defs/{def_name}"),
             reason: e.to_string(),
         })?;
-        generate_node(def_node, &inferred, &type_name, options, buf)?;
+        generate_node(def_node, &inferred, &type_name, options, buf, alloc)?;
     }
     Ok(())
 }
@@ -161,19 +164,15 @@ fn generate_node(
     name: &str,
     options: &CodegenOptions,
     buf: &mut String,
+    alloc: &mut HashSet<String>,
 ) -> Result<(), CodegenError> {
     if inferred.never {
         return emit_never_type(name, buf);
     }
-    // Call explain_schema once to get both Representability and DispatchStrategy,
-    // avoiding a separate classify call followed by another explain_schema inside
-    // emit_dispatch_comment.
     let report = explain_schema(node);
     match report.representation {
         Representability::Unsupported => emit_never_type(name, buf),
-        Representability::Nominal => {
-            emit_nominal(node, inferred, name, options, report.dispatch_strategy, buf)
-        }
+        Representability::Nominal => emit_nominal(node, inferred, name, options, buf, alloc),
         Representability::Structural => emit_structural(node, inferred, name, options, buf),
         Representability::Dynamic => emit_dynamic(name, buf),
     }
@@ -186,11 +185,11 @@ fn emit_nominal(
     inferred: &schemaforge_analysis::InferredNode,
     name: &str,
     options: &CodegenOptions,
-    dispatch: DispatchStrategy,
     buf: &mut String,
+    alloc: &mut HashSet<String>,
 ) -> Result<(), CodegenError> {
     if inferred.types.object || !node.properties.is_empty() {
-        emit_struct(node, inferred, name, options, dispatch, buf)
+        emit_struct(node, inferred, name, options, buf, alloc)
     } else {
         emit_type_alias(inferred, name, buf)
     }
@@ -201,9 +200,18 @@ fn emit_struct(
     inferred: &schemaforge_analysis::InferredNode,
     name: &str,
     options: &CodegenOptions,
-    dispatch: DispatchStrategy,
     buf: &mut String,
+    alloc: &mut HashSet<String>,
 ) -> Result<(), CodegenError> {
+    // Pre-compute unique type names for all nested-object properties using the
+    // shared allocator.  Doing this before emitting the struct body means field
+    // declarations can reference the concrete named type rather than falling
+    // back to serde_json::Value.
+    let nested_type_names = compute_nested_type_names(node, name, alloc);
+
+    // Compute the dispatch strategy here; explain_schema is already called in
+    // generate_node but dispatch is not threaded through to keep arg counts low.
+    let dispatch = explain_schema(node).dispatch_strategy;
     let all_props: Vec<&str> = inferred.property_types.keys().map(String::as_str).collect();
     emit_dispatch_comment(node, dispatch, buf)?;
     emit_required_bitset_comment(&inferred.required_properties, &all_props, buf)?;
@@ -213,16 +221,38 @@ fn emit_struct(
     emit_struct_fields(
         &inferred.property_types,
         &inferred.required_properties,
+        &nested_type_names,
         options,
         buf,
     )?;
     buf.push_str("}\n\n");
-    emit_nested_structs(node, name, options, buf)
+    emit_nested_struct_defs(node, inferred, &nested_type_names, options, buf, alloc)
+}
+
+/// Pre-compute unique Rust type names for all nested-object properties of
+/// `node`.  Names are allocated through the shared `alloc` so they cannot
+/// collide with names produced by `$defs` or sibling nested structs.
+fn compute_nested_type_names(
+    node: &SchemaNode,
+    parent_name: &str,
+    alloc: &mut HashSet<String>,
+) -> IndexMap<String, String> {
+    let mut map = IndexMap::new();
+    for (idx, (key, prop)) in node.properties.iter().enumerate() {
+        if !prop.properties.is_empty() {
+            let suffix = sanitize_type_name(key, idx);
+            let raw_name = format!("{parent_name}{suffix}");
+            let type_name = unique_name(&raw_name, alloc);
+            map.insert(key.clone(), type_name);
+        }
+    }
+    map
 }
 
 fn emit_struct_fields(
     props: &IndexMap<String, schemaforge_analysis::InferredNode>,
     required: &[String],
+    nested_type_names: &IndexMap<String, String>,
     options: &CodegenOptions,
     buf: &mut String,
 ) -> Result<(), CodegenError> {
@@ -230,7 +260,12 @@ fn emit_struct_fields(
     for (idx, (key, prop_inferred)) in props.iter().enumerate() {
         let raw_name = sanitize_field_name(key, idx);
         let field_name = unique_name(&raw_name, &mut used_names);
-        let rust_type = inferred_to_rust_type(prop_inferred);
+        // Use the pre-computed nested type name when the property is itself a
+        // named struct; otherwise fall back to the primitive-type mapping.
+        let rust_type = nested_type_names.get(key).map_or_else(
+            || inferred_to_rust_type(prop_inferred).to_owned(),
+            Clone::clone,
+        );
         let optional = options.wrap_optional && !required.contains(key);
         // Always emit a properly escaped serde rename attribute so that the
         // original JSON key is never interpolated raw into the Rust source.
@@ -245,23 +280,32 @@ fn emit_struct_fields(
     Ok(())
 }
 
-fn emit_nested_structs(
+/// Emit Rust struct definitions for all nested-object properties of `node`.
+///
+/// Reuses the `InferredNode` values already computed by `analyse` for the
+/// parent, avoiding a second analysis pass over the same property schemas.
+fn emit_nested_struct_defs(
     node: &SchemaNode,
-    parent_name: &str,
+    inferred: &schemaforge_analysis::InferredNode,
+    nested_type_names: &IndexMap<String, String>,
     options: &CodegenOptions,
     buf: &mut String,
+    alloc: &mut HashSet<String>,
 ) -> Result<(), CodegenError> {
-    for (idx, (key, prop)) in node.properties.iter().enumerate() {
-        if prop.properties.is_empty() {
+    for (key, prop) in &node.properties {
+        let Some(type_name) = nested_type_names.get(key) else {
             continue;
-        }
-        let suffix = sanitize_type_name(key, idx);
-        let prop_name = format!("{parent_name}{suffix}");
-        let prop_inferred = analyse(prop).map_err(|e| CodegenError::Unsupported {
-            path: key.clone(),
-            reason: e.to_string(),
-        })?;
-        generate_node(prop, &prop_inferred, &prop_name, options, buf)?;
+        };
+        // Reuse the cached InferredNode from the parent to avoid re-analysing
+        // the same property schema a second time.
+        let prop_inferred = match inferred.property_types.get(key) {
+            Some(cached) => cached.clone(),
+            None => analyse(prop).map_err(|e| CodegenError::Unsupported {
+                path: key.clone(),
+                reason: e.to_string(),
+            })?,
+        };
+        generate_node(prop, &prop_inferred, type_name, options, buf, alloc)?;
     }
     Ok(())
 }
@@ -1083,6 +1127,120 @@ mod tests {
         assert!(
             code.contains("pub field_0"),
             "expected fallback field name `field_0` in:\n{code}"
+        );
+    }
+
+    #[test]
+    fn defs_named_root_gets_unique_name() {
+        // A $def keyed "Root" must be renamed (e.g. "Root_1") because "Root"
+        // is pre-seeded in the shared allocator for the root struct.
+        let string_def = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            ..SchemaNode::default()
+        };
+        let mut defs = indexmap::IndexMap::new();
+        defs.insert("Root".to_owned(), string_def);
+        let root = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            defs,
+            ..SchemaNode::default()
+        };
+        let ir = SchemaIr::new(root, "", "abc", "test://");
+        let code = generate(&ir, &CodegenOptions::default()).unwrap();
+        // The def "Root" must be renamed because "Root" is taken by the root struct.
+        assert!(
+            code.contains("pub type Root_1 = String;"),
+            "expected Root_1 for def named Root in:\n{code}"
+        );
+        // Exactly one definition named "Root" must exist — the root struct itself.
+        let root_count = code
+            .lines()
+            .filter(|l| {
+                l.trim_start().starts_with("pub struct Root")
+                    || l.trim_start().starts_with("pub type Root ")
+                    || l.trim_start().starts_with("pub enum Root ")
+            })
+            .count();
+        assert_eq!(
+            root_count, 1,
+            "expected exactly one top-level Root definition in:\n{code}"
+        );
+    }
+
+    #[test]
+    fn nested_structs_with_colliding_names_get_unique_type_names() {
+        // "foo-bar" and "foo_bar" both sanitize to the same PascalCase suffix "FooBar".
+        // The shared allocator must ensure the two nested struct names are unique.
+        let inner_prop = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            ..SchemaNode::default()
+        };
+        let mut inner_props = indexmap::IndexMap::new();
+        inner_props.insert("x".to_owned(), inner_prop);
+        let nested = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            properties: inner_props,
+            ..SchemaNode::default()
+        };
+        let mut root_props = indexmap::IndexMap::new();
+        root_props.insert("foo-bar".to_owned(), nested.clone());
+        root_props.insert("foo_bar".to_owned(), nested);
+        let root = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            properties: root_props,
+            ..SchemaNode::default()
+        };
+        let ir = SchemaIr::new(root, "", "abc", "test://");
+        let code = generate(&ir, &CodegenOptions::default()).unwrap();
+        assert!(
+            code.contains("RootFooBar"),
+            "expected RootFooBar nested type in:\n{code}"
+        );
+        assert!(
+            code.contains("RootFooBar_1"),
+            "expected RootFooBar_1 nested type for colliding foo_bar in:\n{code}"
+        );
+        // Count struct definitions: Root, RootFooBar, RootFooBar_1 = 3.
+        let struct_count = code.matches("pub struct ").count();
+        assert_eq!(
+            struct_count, 3,
+            "expected exactly 3 struct definitions, got {struct_count} in:\n{code}"
+        );
+    }
+
+    #[test]
+    fn nested_struct_field_uses_concrete_type_not_value() {
+        // When a property has nested properties, its field type must be the
+        // generated named struct, not serde_json::Value.
+        let inner_prop = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            ..SchemaNode::default()
+        };
+        let mut inner_props = indexmap::IndexMap::new();
+        inner_props.insert("name".to_owned(), inner_prop);
+        let nested = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            properties: inner_props,
+            ..SchemaNode::default()
+        };
+        let mut root_props = indexmap::IndexMap::new();
+        root_props.insert("child".to_owned(), nested);
+        let root = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            properties: root_props,
+            ..SchemaNode::default()
+        };
+        let ir = SchemaIr::new(root, "", "abc", "test://");
+        let code = generate(&ir, &CodegenOptions::default()).unwrap();
+        // The `child` field must reference the concrete struct name, not Value.
+        assert!(
+            code.contains("RootChild"),
+            "expected RootChild nested struct in:\n{code}"
+        );
+        assert!(
+            !code.contains("child: Option<serde_json::Value>")
+                && !code.contains("child: serde_json::Value"),
+            "child field must not use serde_json::Value when a concrete struct exists:\n{code}"
         );
     }
 }

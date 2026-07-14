@@ -392,6 +392,10 @@ fn adapt_oas30_schema(schema: &Value) -> Value {
         new_obj.insert("type".to_owned(), make_nullable_type(type_val));
     }
 
+    // Rewrite OAS 3.0 boolean exclusiveMinimum/Maximum to Draft 2020-12 style.
+    adapt_exclusive_bound(&mut new_obj, "exclusiveMinimum", "minimum");
+    adapt_exclusive_bound(&mut new_obj, "exclusiveMaximum", "maximum");
+
     // Recurse into all sub-schema locations.
     adapt_map_values(&mut new_obj, "properties");
     adapt_map_values(&mut new_obj, "$defs");
@@ -405,6 +409,37 @@ fn adapt_oas30_schema(schema: &Value) -> Value {
     adapt_array_values(&mut new_obj, "oneOf");
 
     Value::Object(new_obj)
+}
+
+/// Rewrite an OAS 3.0 boolean exclusive-bound keyword to Draft 2020-12 style.
+///
+/// OAS 3.0 uses `exclusiveMinimum: true` to indicate that the adjacent
+/// `minimum` value is exclusive.  Draft 2020-12 instead uses a numeric
+/// `exclusiveMinimum` directly (the bound value itself).
+///
+/// Conversion rules:
+/// - `exclusiveMinimum: true`  + `minimum: X` → `exclusiveMinimum: X`, remove `minimum`
+/// - `exclusiveMinimum: true`  (no `minimum`)  → remove `exclusiveMinimum` (nothing to convert)
+/// - `exclusiveMinimum: false`                 → remove `exclusiveMinimum` (not exclusive)
+/// - `exclusiveMinimum: <number>`              → leave unchanged (already 2020-12 style)
+fn adapt_exclusive_bound(
+    obj: &mut serde_json::Map<String, Value>,
+    exclusive_key: &str,
+    bound_key: &str,
+) {
+    match obj.get(exclusive_key).and_then(Value::as_bool) {
+        Some(true) => {
+            if let Some(bound_val) = obj.remove(bound_key) {
+                obj.insert(exclusive_key.to_owned(), bound_val);
+            } else {
+                obj.remove(exclusive_key);
+            }
+        }
+        Some(false) => {
+            obj.remove(exclusive_key);
+        }
+        None => {} // Numeric or absent: leave as-is (already 2020-12 style or not present).
+    }
 }
 
 /// Recursively adapt every value in an object-typed keyword (e.g. `properties`).
@@ -708,5 +743,124 @@ mod tests {
         let types = s["type"].as_array().unwrap();
         assert!(types.contains(&json!("null")));
         assert!(types.contains(&json!("string")));
+    }
+
+    // ── exclusiveMinimum / exclusiveMaximum boolean rewrite ───────────────────
+
+    #[test]
+    fn adapt_oas30_exclusive_minimum_true_with_minimum() {
+        // OAS 3.0: exclusiveMinimum: true + minimum: 5 → exclusiveMinimum: 5
+        let schema = json!({"minimum": 5.0, "exclusiveMinimum": true});
+        let adapted = adapt_oas30_schema(&schema);
+        assert_eq!(
+            adapted["exclusiveMinimum"],
+            json!(5.0),
+            "exclusiveMinimum must carry the minimum value"
+        );
+        assert!(
+            adapted.get("minimum").is_none(),
+            "minimum must be removed after rewrite"
+        );
+    }
+
+    #[test]
+    fn adapt_oas30_exclusive_maximum_true_with_maximum() {
+        // OAS 3.0: exclusiveMaximum: true + maximum: 10 → exclusiveMaximum: 10
+        let schema = json!({"maximum": 10.0, "exclusiveMaximum": true});
+        let adapted = adapt_oas30_schema(&schema);
+        assert_eq!(
+            adapted["exclusiveMaximum"],
+            json!(10.0),
+            "exclusiveMaximum must carry the maximum value"
+        );
+        assert!(
+            adapted.get("maximum").is_none(),
+            "maximum must be removed after rewrite"
+        );
+    }
+
+    #[test]
+    fn adapt_oas30_exclusive_minimum_zero_boundary() {
+        // Boundary case: minimum: 0 (falsy in JSON) must still be moved.
+        let schema = json!({"minimum": 0, "exclusiveMinimum": true});
+        let adapted = adapt_oas30_schema(&schema);
+        assert_eq!(
+            adapted["exclusiveMinimum"],
+            json!(0),
+            "exclusiveMinimum must carry the zero minimum value"
+        );
+        assert!(
+            adapted.get("minimum").is_none(),
+            "minimum: 0 must be removed after rewrite"
+        );
+    }
+
+    #[test]
+    fn adapt_oas30_exclusive_minimum_false_removes_keyword() {
+        // exclusiveMinimum: false means not exclusive; just drop the keyword.
+        let schema = json!({"minimum": 1.0, "exclusiveMinimum": false});
+        let adapted = adapt_oas30_schema(&schema);
+        assert!(
+            adapted.get("exclusiveMinimum").is_none(),
+            "false exclusiveMinimum must be removed"
+        );
+        // minimum itself must remain unchanged (it is the non-exclusive bound).
+        assert_eq!(adapted["minimum"], json!(1.0));
+    }
+
+    #[test]
+    fn adapt_oas30_exclusive_minimum_true_no_minimum_removes_keyword() {
+        // exclusiveMinimum: true but no minimum → nothing to convert; drop the keyword.
+        let schema = json!({"type": "number", "exclusiveMinimum": true});
+        let adapted = adapt_oas30_schema(&schema);
+        assert!(
+            adapted.get("exclusiveMinimum").is_none(),
+            "exclusiveMinimum: true with no minimum must be removed"
+        );
+    }
+
+    #[test]
+    fn adapt_oas30_numeric_exclusive_minimum_passthrough() {
+        // A numeric exclusiveMinimum (Draft 2020-12 style) must not be modified.
+        let schema = json!({"exclusiveMinimum": 3.5});
+        let adapted = adapt_oas30_schema(&schema);
+        assert_eq!(
+            adapted["exclusiveMinimum"],
+            json!(3.5),
+            "numeric exclusiveMinimum must pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn adapt_oas30_exclusive_bounds_recursive_in_properties() {
+        // Exclusive bound rewrite must happen recursively inside nested schemas.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer", "minimum": 0, "exclusiveMinimum": true}
+            }
+        });
+        let adapted = adapt_oas30_schema(&schema);
+        let count = &adapted["properties"]["count"];
+        assert_eq!(count["exclusiveMinimum"], json!(0));
+        assert!(count.get("minimum").is_none());
+    }
+
+    #[test]
+    fn swagger_exclusive_minimum_rewritten() {
+        // Swagger 2.0 schemas go through the same OAS 3.0 adaptation path.
+        let swagger = r#"{
+            "swagger": "2.0",
+            "info": {"title": "T", "version": "1"},
+            "paths": {},
+            "definitions": {
+                "PositiveInt": {"type": "integer", "minimum": 0, "exclusiveMinimum": true}
+            }
+        }"#;
+        let doc = OpenApiDoc::from_json(swagger).unwrap();
+        let schemas = doc.component_schemas();
+        let s = &schemas["PositiveInt"].schema;
+        assert_eq!(s["exclusiveMinimum"], json!(0));
+        assert!(s.get("minimum").is_none());
     }
 }
