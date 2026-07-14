@@ -314,20 +314,15 @@ fn check_unsupported_keywords(obj: &serde_json::Map<String, Value>) -> Result<()
 
 /// Schema keywords that do not add applicator or assertion constraints and
 /// can be ignored when deciding whether a `$ref` has meaningful siblings.
-const REF_PASSTHROUGH_KEYS: &[&str] = &[
-    "$ref",
-    "$id",
-    "$anchor",
-    "$dynamicAnchor",
-    "$schema",
-    "$defs",
-    "$comment",
-];
+const REF_PASSTHROUGH_KEYS: &[&str] = &["$ref", "$id", "$anchor", "$schema", "$defs", "$comment"];
 
 fn lower_object_schema(
     obj: &serde_json::Map<String, Value>,
     ctx: &mut LowerCtx<'_>,
 ) -> Result<SchemaNode, CompileError> {
+    // Always fail closed on unsupported keywords before any `$ref` short-circuit
+    // so metadata like `$dynamicAnchor` cannot bypass the gate.
+    check_unsupported_keywords(obj)?;
     if let Some(Value::String(ref_str)) = obj.get("$ref") {
         if ref_str.starts_with('#') {
             return lower_local_ref_with_siblings(ref_str, obj, ctx);
@@ -965,6 +960,14 @@ mod tests {
         assert_unsupported(
             "$dynamicAnchor",
             r#"{"$dynamicAnchor":"items","type":"array"}"#,
+        );
+    }
+
+    #[test]
+    fn compile_dynamic_anchor_with_ref_is_unsupported() {
+        assert_unsupported(
+            "$dynamicAnchor",
+            r##"{"$defs":{"S":{"type":"string"}},"$ref":"#/$defs/S","$dynamicAnchor":"items"}"##,
         );
     }
 
