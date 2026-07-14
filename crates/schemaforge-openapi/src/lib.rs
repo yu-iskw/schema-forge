@@ -212,10 +212,7 @@ fn normalise_swagger(raw: Value, diagnostics: &mut Vec<Diagnostic>) -> Value {
     Value::Object(obj)
 }
 
-fn lift_definitions(
-    obj: &mut serde_json::Map<String, Value>,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
+fn lift_definitions(obj: &mut serde_json::Map<String, Value>, diagnostics: &mut Vec<Diagnostic>) {
     let Some(defs) = obj.remove("definitions") else {
         return;
     };
@@ -278,15 +275,13 @@ fn lift_body_from_operation(operation: &mut Value) -> usize {
         }
         !is_body
     });
-    if let Some(schema) = body_schema {
+    body_schema.map_or(0, |schema| {
         let rb = serde_json::json!({
             "content": { "application/json": { "schema": schema } }
         });
         op.insert("requestBody".to_owned(), rb);
         1
-    } else {
-        0
-    }
+    })
 }
 
 // ── Schema extraction ─────────────────────────────────────────────────────────
@@ -518,7 +513,10 @@ mod tests {
         let types = adapted["type"].as_array().unwrap();
         assert!(types.contains(&json!("null")));
         assert!(types.contains(&json!("string")));
-        assert!(adapted.get("nullable").is_none(), "nullable must be removed");
+        assert!(
+            adapted.get("nullable").is_none(),
+            "nullable must be removed"
+        );
     }
 
     #[test]

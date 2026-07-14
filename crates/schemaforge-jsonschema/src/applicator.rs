@@ -1,6 +1,6 @@
 //! Applicator vocabulary: `allOf`, `anyOf`, `oneOf`, `not`, `if/then/else`,
-//! `properties`, `patternProperties`, `additionalProperties`, `items`,
-//! `prefixItems`, `contains`.
+//! `properties`, `patternProperties`, `additionalProperties`, `propertyNames`,
+//! `dependentSchemas`, `items`, `prefixItems`, `contains`.
 
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -23,6 +23,8 @@ pub(crate) fn apply(
     apply_properties(obj, instance, path, ctx, out);
     apply_pattern_properties(obj, instance, path, ctx, out);
     apply_additional_properties(obj, instance, path, ctx, out);
+    apply_property_names(obj, instance, path, ctx, out);
+    apply_dependent_schemas(obj, instance, path, ctx, out);
     apply_items(obj, instance, path, ctx, out);
     apply_prefix_items(obj, instance, path, ctx, out);
     apply_contains(obj, instance, path, ctx, out);
@@ -208,6 +210,46 @@ fn collect_pattern_property_regexes(obj: &Map<String, Value>) -> Vec<Regex> {
         .and_then(Value::as_object)
         .map(|pp| pp.keys().filter_map(|k| Regex::new(k).ok()).collect())
         .unwrap_or_default()
+}
+
+/// `propertyNames` - each key in an object must satisfy the given schema.
+fn apply_property_names(
+    obj: &Map<String, Value>,
+    instance: &Value,
+    path: &str,
+    ctx: &ValidationContext<'_>,
+    out: &mut ValidationOutput,
+) {
+    let (Some(pn_schema), Value::Object(inst)) = (obj.get("propertyNames"), instance) else {
+        return;
+    };
+    for key in inst.keys() {
+        let key_val = Value::String(key.clone());
+        let key_path = format!("{path}/{key}");
+        out.merge(validate_schema(pn_schema, &key_val, &key_path, ctx));
+    }
+}
+
+/// `dependentSchemas` - when a trigger property is present, the paired schema
+/// must also validate the whole instance.
+fn apply_dependent_schemas(
+    obj: &Map<String, Value>,
+    instance: &Value,
+    path: &str,
+    ctx: &ValidationContext<'_>,
+    out: &mut ValidationOutput,
+) {
+    let (Some(Value::Object(dep_schemas)), Value::Object(inst)) =
+        (obj.get("dependentSchemas"), instance)
+    else {
+        return;
+    };
+    for (trigger, dep_schema) in dep_schemas {
+        if inst.contains_key(trigger) {
+            let kpath = format!("{path}/dependentSchemas/{trigger}");
+            out.merge(validate_schema(dep_schema, instance, &kpath, ctx));
+        }
+    }
 }
 
 fn apply_items(
