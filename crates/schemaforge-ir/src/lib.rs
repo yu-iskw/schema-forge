@@ -57,8 +57,6 @@ impl TypeSet {
     }
 
     /// Parse from a JSON Schema `type` keyword value.
-    ///
-    /// Accepts either a string or an array of strings.
     #[must_use]
     pub fn from_json(v: &Value) -> Self {
         let mut set = Self::none();
@@ -92,6 +90,37 @@ impl TypeSet {
         }
     }
 
+    /// Returns stable JSON type names accepted by this set.
+    ///
+    /// `integer` is omitted when `number` is present because JSON Schema
+    /// defines integers as a subset of numbers.
+    #[must_use]
+    pub fn names(self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        if self.null {
+            names.push("null");
+        }
+        if self.boolean {
+            names.push("boolean");
+        }
+        if self.integer && !self.number {
+            names.push("integer");
+        }
+        if self.number {
+            names.push("number");
+        }
+        if self.string {
+            names.push("string");
+        }
+        if self.array {
+            names.push("array");
+        }
+        if self.object {
+            names.push("object");
+        }
+        names
+    }
+
     /// Returns `true` when no type is set.
     #[must_use]
     pub const fn is_empty(self) -> bool {
@@ -117,93 +146,86 @@ pub struct NumericBound {
 /// String-level constraints derived from a schema.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StringConstraints {
-    /// `minLength` keyword value.
     pub min_length: Option<u64>,
-    /// `maxLength` keyword value.
     pub max_length: Option<u64>,
-    /// `pattern` keyword value (raw regex string).
     pub pattern: Option<String>,
-    /// `format` keyword value.
     pub format: Option<String>,
 }
 
 /// Numeric constraints derived from a schema.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NumericConstraints {
-    /// Lower bound (from `minimum` or `exclusiveMinimum`).
     pub minimum: Option<NumericBound>,
-    /// Upper bound (from `maximum` or `exclusiveMaximum`).
     pub maximum: Option<NumericBound>,
-    /// `multipleOf` keyword value.
     pub multiple_of: Option<f64>,
 }
 
 /// Array constraints derived from a schema.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrayConstraints {
-    /// `minItems` keyword value.
     pub min_items: Option<u64>,
-    /// `maxItems` keyword value.
     pub max_items: Option<u64>,
-    /// `uniqueItems` keyword value.
     pub unique_items: bool,
-    /// `minContains` keyword value.
     pub min_contains: Option<u64>,
-    /// `maxContains` keyword value.
     pub max_contains: Option<u64>,
 }
 
 /// Object constraints derived from a schema.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectConstraints {
-    /// `required` keyword value.
     pub required: Vec<String>,
-    /// `minProperties` keyword value.
     pub min_properties: Option<u64>,
-    /// `maxProperties` keyword value.
     pub max_properties: Option<u64>,
+}
+
+/// Stable, language-neutral metadata for one JSON object property.
+///
+/// This is the public introspection shape used by Rust and language bindings.
+/// It deliberately describes the schema attribute rather than an instance
+/// value. Nested object properties are recursively represented by
+/// [`Self::attributes`]. The complete compiled child schema remains available
+/// in [`Self::schema`] for advanced consumers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObjectAttribute {
+    /// JSON property name exactly as declared by the schema.
+    pub name: String,
+    /// Whether the containing object lists this property in `required`.
+    pub required: bool,
+    /// Accepted JSON types using standard JSON Schema names.
+    pub types: Vec<String>,
+    /// Optional schema title.
+    pub title: Option<String>,
+    /// Optional schema description.
+    pub description: Option<String>,
+    /// Optional string `format` annotation/assertion.
+    pub format: Option<String>,
+    /// Nested attributes when this property is itself an object schema.
+    pub attributes: Vec<ObjectAttribute>,
+    /// Complete compiled schema for the property.
+    pub schema: SchemaNode,
 }
 
 /// A compiled schema node in the IR.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SchemaNode {
-    /// The inferred set of JSON types this schema accepts.
     pub types: TypeSet,
-    /// String-specific constraints.
     pub string: StringConstraints,
-    /// Numeric constraints.
     pub numeric: NumericConstraints,
-    /// Array constraints.
     pub array: ArrayConstraints,
-    /// Object constraints.
     pub object: ObjectConstraints,
-    /// Named properties (for object schemas).
     pub properties: IndexMap<String, SchemaNode>,
-    /// Schema for additional properties (if constrained).
     pub additional_properties: Option<Box<SchemaNode>>,
-    /// Schema for array items.
     pub items: Option<Box<SchemaNode>>,
-    /// Schemas for a fixed-length tuple prefix (`prefixItems`).
     pub prefix_items: Vec<SchemaNode>,
-    /// `enum` keyword: list of allowed constant values.
     pub enum_values: Vec<Value>,
-    /// `const` keyword: single allowed value.
     pub const_value: Option<Value>,
-    /// `title` metadata.
     pub title: Option<String>,
-    /// `description` metadata.
     pub description: Option<String>,
-    /// Raw `$id` of this schema node (if set).
     pub id: Option<String>,
-    /// `$defs` / `definitions` sub-schemas keyed by name.
     pub defs: IndexMap<String, SchemaNode>,
-    /// `allOf` sub-schemas.
     pub all_of: Vec<SchemaNode>,
-    /// `anyOf` sub-schemas.
     pub any_of: Vec<SchemaNode>,
-    /// `oneOf` sub-schemas.
     pub one_of: Vec<SchemaNode>,
-    /// `not` schema.
     pub not: Option<Box<SchemaNode>>,
 }
 
@@ -258,23 +280,64 @@ impl SchemaNode {
     pub const fn is_never(&self) -> bool {
         self.types.is_empty() && self.enum_values.is_empty() && self.const_value.is_none()
     }
+
+    /// Return descriptors for directly declared JSON object properties.
+    ///
+    /// The returned order follows the source `properties` object order. This
+    /// method intentionally does not flatten `oneOf`/`anyOf` alternatives,
+    /// because doing so would erase variant semantics. Consumers can inspect
+    /// the complete child [`SchemaNode`] in each descriptor when needed.
+    #[must_use]
+    pub fn object_attributes(&self) -> Vec<ObjectAttribute> {
+        self.properties
+            .iter()
+            .map(|(name, schema)| ObjectAttribute {
+                name: name.clone(),
+                required: self.object.required.iter().any(|required| required == name),
+                types: schema
+                    .types
+                    .names()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                title: schema.title.clone(),
+                description: schema.description.clone(),
+                format: schema.string.format.clone(),
+                attributes: schema.object_attributes(),
+                schema: schema.clone(),
+            })
+            .collect()
+    }
+
+    /// Return one directly declared object attribute by its JSON property name.
+    #[must_use]
+    pub fn object_attribute(&self, name: &str) -> Option<ObjectAttribute> {
+        self.object_attributes()
+            .into_iter()
+            .find(|attribute| attribute.name == name)
+    }
+
+    /// Serialize object attribute descriptors to a JSON value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a serialization error if a future custom IR value cannot be
+    /// represented by `serde_json`.
+    pub fn object_attributes_json(&self) -> Result<Value, serde_json::Error> {
+        serde_json::to_value(self.object_attributes())
+    }
 }
 
 /// The top-level compiled IR for a schema document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SchemaIr {
-    /// The root schema node.
     pub root: SchemaNode,
-    /// The dialect URI detected in the source.
     pub dialect_uri: String,
-    /// SHA-256 hex digest of the source bytes.
     pub source_digest: String,
-    /// The source URI / file path.
     pub source_uri: String,
 }
 
 impl SchemaIr {
-    /// Create a new IR with the given root and metadata.
     #[must_use]
     pub fn new(
         root: SchemaNode,
@@ -288,6 +351,27 @@ impl SchemaIr {
             source_digest: source_digest.into(),
             source_uri: source_uri.into(),
         }
+    }
+
+    /// Return root JSON object attributes.
+    #[must_use]
+    pub fn object_attributes(&self) -> Vec<ObjectAttribute> {
+        self.root.object_attributes()
+    }
+
+    /// Return one root object attribute by JSON property name.
+    #[must_use]
+    pub fn object_attribute(&self, name: &str) -> Option<ObjectAttribute> {
+        self.root.object_attribute(name)
+    }
+
+    /// Return root object attributes as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when serialization fails.
+    pub fn object_attributes_json(&self) -> Result<Value, serde_json::Error> {
+        self.root.object_attributes_json()
     }
 }
 
@@ -316,11 +400,11 @@ mod tests {
         let ts = TypeSet::from_json(&json!("number"));
         assert!(ts.number);
         assert!(ts.integer);
+        assert_eq!(ts.names(), vec!["number"]);
     }
 
     #[test]
     fn type_set_any_and_none() {
-        assert!(!TypeSet::none().is_empty() || TypeSet::none().is_empty());
         assert!(TypeSet::none().is_empty());
         assert!(!TypeSet::any().is_empty());
     }
@@ -336,5 +420,46 @@ mod tests {
     fn boolean_schema_false_is_never() {
         let never = SchemaNode::boolean_schema(false);
         assert!(never.is_never());
+    }
+
+    #[test]
+    fn object_attributes_include_required_metadata_and_nested_attributes() {
+        let mut root = SchemaNode::default();
+        root.types = TypeSet::from_json(&json!("object"));
+        root.object.required.push("id".to_owned());
+
+        let mut id = SchemaNode::default();
+        id.types = TypeSet::from_json(&json!("string"));
+        id.title = Some("Identifier".to_owned());
+        id.string.format = Some("uuid".to_owned());
+
+        let mut profile = SchemaNode::default();
+        profile.types = TypeSet::from_json(&json!("object"));
+        let mut display_name = SchemaNode::default();
+        display_name.types = TypeSet::from_json(&json!("string"));
+        profile
+            .properties
+            .insert("displayName".to_owned(), display_name);
+
+        root.properties.insert("id".to_owned(), id);
+        root.properties.insert("profile".to_owned(), profile);
+
+        let attributes = root.object_attributes();
+        assert_eq!(attributes.len(), 2);
+        assert_eq!(attributes[0].name, "id");
+        assert!(attributes[0].required);
+        assert_eq!(attributes[0].types, vec!["string"]);
+        assert_eq!(attributes[0].format.as_deref(), Some("uuid"));
+        assert_eq!(attributes[1].attributes[0].name, "displayName");
+    }
+
+    #[test]
+    fn object_attributes_can_be_serialized_to_json() {
+        let mut root = SchemaNode::default();
+        root.properties
+            .insert("name".to_owned(), SchemaNode::default());
+        let value = root.object_attributes_json().unwrap();
+        assert_eq!(value[0]["name"], "name");
+        assert!(value[0].get("schema").is_some());
     }
 }
