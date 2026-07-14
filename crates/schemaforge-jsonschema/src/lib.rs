@@ -137,8 +137,7 @@ impl Validator {
         if options.assert_formats {
             formats.assert_all();
         }
-        let dynamic_anchors = collect_dynamic_anchors(schema);
-        let anchors = collect_static_anchors(schema);
+        let (anchors, dynamic_anchors) = collect_anchors(schema);
         let mut patterns = HashMap::new();
         collect_patterns_recursive(schema, &mut patterns)?;
         Ok(Self {
@@ -197,54 +196,35 @@ impl Validator {
     }
 }
 
-/// Walk the schema tree and collect every sub-schema that declares a
-/// `$dynamicAnchor`, keyed by the anchor name.
-fn collect_dynamic_anchors(schema: &Value) -> HashMap<String, Value> {
-    let mut anchors = HashMap::new();
-    collect_dynamic_anchors_recursive(schema, &mut anchors);
-    anchors
+/// Walk the schema tree once and collect `$anchor` and `$dynamicAnchor`
+/// registries (static first in the returned pair).
+fn collect_anchors(schema: &Value) -> (HashMap<String, Value>, HashMap<String, Value>) {
+    let mut static_anchors = HashMap::new();
+    let mut dynamic_anchors = HashMap::new();
+    collect_anchors_recursive(schema, &mut static_anchors, &mut dynamic_anchors);
+    (static_anchors, dynamic_anchors)
 }
 
-fn collect_dynamic_anchors_recursive(schema: &Value, anchors: &mut HashMap<String, Value>) {
-    match schema {
-        Value::Object(obj) => {
-            if let Some(Value::String(name)) = obj.get("$dynamicAnchor") {
-                anchors.insert(name.clone(), schema.clone());
-            }
-            for value in obj.values() {
-                collect_dynamic_anchors_recursive(value, anchors);
-            }
-        }
-        Value::Array(arr) => {
-            for item in arr {
-                collect_dynamic_anchors_recursive(item, anchors);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Walk the schema tree and collect every sub-schema that declares a
-/// `$anchor`, keyed by the anchor name.
-fn collect_static_anchors(schema: &Value) -> HashMap<String, Value> {
-    let mut anchors = HashMap::new();
-    collect_static_anchors_recursive(schema, &mut anchors);
-    anchors
-}
-
-fn collect_static_anchors_recursive(schema: &Value, anchors: &mut HashMap<String, Value>) {
+fn collect_anchors_recursive(
+    schema: &Value,
+    static_anchors: &mut HashMap<String, Value>,
+    dynamic_anchors: &mut HashMap<String, Value>,
+) {
     match schema {
         Value::Object(obj) => {
             if let Some(Value::String(name)) = obj.get("$anchor") {
-                anchors.insert(name.clone(), schema.clone());
+                static_anchors.insert(name.clone(), schema.clone());
+            }
+            if let Some(Value::String(name)) = obj.get("$dynamicAnchor") {
+                dynamic_anchors.insert(name.clone(), schema.clone());
             }
             for value in obj.values() {
-                collect_static_anchors_recursive(value, anchors);
+                collect_anchors_recursive(value, static_anchors, dynamic_anchors);
             }
         }
         Value::Array(arr) => {
             for item in arr {
-                collect_static_anchors_recursive(item, anchors);
+                collect_anchors_recursive(item, static_anchors, dynamic_anchors);
             }
         }
         _ => {}

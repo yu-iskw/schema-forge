@@ -315,10 +315,16 @@ fn apply_unevaluated_items(
         return;
     }
 
+    // Collect contains schemas once — not per array element — so large arrays
+    // don't re-walk allOf/$ref for every index.
+    let contains_schemas = collect_contains_schemas(obj, ctx);
     for (i, item) in items.iter().enumerate().skip(effective_prefix_len) {
         // Draft 2020-12 §11.2: items matching `contains` (including those from
         // allOf/$ref targets) are evaluated.
-        if item_matches_any_contains(obj, item, ctx, 0) {
+        if contains_schemas
+            .iter()
+            .any(|contains| validate_schema(contains, item, "", ctx).is_valid())
+        {
             continue;
         }
         let item_path = format!("{path}/{i}");
@@ -326,38 +332,41 @@ fn apply_unevaluated_items(
     }
 }
 
-/// Return `true` when `item` matches a `contains` schema from `obj`, any of
-/// its `allOf` branches, or through a `$ref` chain.
-fn item_matches_any_contains(
-    obj: &Map<String, Value>,
-    item: &Value,
-    ctx: &ValidationContext<'_>,
+/// Collect `contains` schemas from `obj`, its `allOf` branches, and `$ref`
+/// targets (same reachability as the former per-item walk).
+fn collect_contains_schemas<'a>(
+    obj: &'a Map<String, Value>,
+    ctx: &ValidationContext<'a>,
+) -> Vec<&'a Value> {
+    let mut out = Vec::new();
+    collect_contains_schemas_depth(obj, ctx, 0, &mut out);
+    out
+}
+
+fn collect_contains_schemas_depth<'a>(
+    obj: &'a Map<String, Value>,
+    ctx: &ValidationContext<'a>,
     depth: usize,
-) -> bool {
+    out: &mut Vec<&'a Value>,
+) {
     if depth > MAX_BRANCH_REF_DEPTH {
-        return false;
+        return;
     }
-    if let Some(contains) = obj.get("contains")
-        && validate_schema(contains, item, "", ctx).is_valid()
-    {
-        return true;
+    if let Some(contains) = obj.get("contains") {
+        out.push(contains);
     }
     if let Some(Value::Array(branches)) = obj.get("allOf") {
         for branch in branches {
-            if let Value::Object(b) = branch
-                && item_matches_any_contains(b, item, ctx, depth + 1)
-            {
-                return true;
+            if let Value::Object(b) = branch {
+                collect_contains_schemas_depth(b, ctx, depth + 1, out);
             }
         }
     }
     if let Some(Value::String(ref_uri)) = obj.get("$ref")
         && let Some(Value::Object(target)) = crate::core::resolve_ref(ref_uri, ctx)
-        && item_matches_any_contains(target, item, ctx, depth + 1)
     {
-        return true;
+        collect_contains_schemas_depth(target, ctx, depth + 1, out);
     }
-    false
 }
 
 /// Return `(effective_prefix_len, has_items)` by merging the direct schema
