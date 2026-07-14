@@ -118,6 +118,8 @@ pub struct Validator {
     formats: FormatRegistry,
     /// `$dynamicAnchor` -> schema extracted from the root document.
     dynamic_anchors: HashMap<String, Value>,
+    /// `$anchor` -> schema extracted from the root document.
+    anchors: HashMap<String, Value>,
     /// Pre-compiled regexes for every `pattern` and `patternProperties` key
     /// found in the schema tree.  Keyed by the raw pattern string.
     patterns: HashMap<String, Regex>,
@@ -136,6 +138,7 @@ impl Validator {
             formats.assert_all();
         }
         let dynamic_anchors = collect_dynamic_anchors(schema);
+        let anchors = collect_static_anchors(schema);
         let mut patterns = HashMap::new();
         collect_patterns_recursive(schema, &mut patterns)?;
         Ok(Self {
@@ -144,6 +147,7 @@ impl Validator {
             registry: HashMap::new(),
             formats,
             dynamic_anchors,
+            anchors,
             patterns,
         })
     }
@@ -174,6 +178,7 @@ impl Validator {
             base_uri: &self.options.base_uri,
             root_schema: &self.schema,
             dynamic_anchors: &self.dynamic_anchors,
+            anchors: &self.anchors,
             patterns: &self.patterns,
             depth: Cell::new(0),
         };
@@ -196,23 +201,50 @@ impl Validator {
 /// `$dynamicAnchor`, keyed by the anchor name.
 fn collect_dynamic_anchors(schema: &Value) -> HashMap<String, Value> {
     let mut anchors = HashMap::new();
-    collect_anchors_recursive(schema, &mut anchors);
+    collect_dynamic_anchors_recursive(schema, &mut anchors);
     anchors
 }
 
-fn collect_anchors_recursive(schema: &Value, anchors: &mut HashMap<String, Value>) {
+fn collect_dynamic_anchors_recursive(schema: &Value, anchors: &mut HashMap<String, Value>) {
     match schema {
         Value::Object(obj) => {
             if let Some(Value::String(name)) = obj.get("$dynamicAnchor") {
                 anchors.insert(name.clone(), schema.clone());
             }
             for value in obj.values() {
-                collect_anchors_recursive(value, anchors);
+                collect_dynamic_anchors_recursive(value, anchors);
             }
         }
         Value::Array(arr) => {
             for item in arr {
-                collect_anchors_recursive(item, anchors);
+                collect_dynamic_anchors_recursive(item, anchors);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Walk the schema tree and collect every sub-schema that declares a
+/// `$anchor`, keyed by the anchor name.
+fn collect_static_anchors(schema: &Value) -> HashMap<String, Value> {
+    let mut anchors = HashMap::new();
+    collect_static_anchors_recursive(schema, &mut anchors);
+    anchors
+}
+
+fn collect_static_anchors_recursive(schema: &Value, anchors: &mut HashMap<String, Value>) {
+    match schema {
+        Value::Object(obj) => {
+            if let Some(Value::String(name)) = obj.get("$anchor") {
+                anchors.insert(name.clone(), schema.clone());
+            }
+            for value in obj.values() {
+                collect_static_anchors_recursive(value, anchors);
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                collect_static_anchors_recursive(item, anchors);
             }
         }
         _ => {}
@@ -297,6 +329,8 @@ pub(crate) struct ValidationContext<'a> {
     pub(crate) root_schema: &'a Value,
     /// Pre-computed `$dynamicAnchor` registry for the root document.
     pub(crate) dynamic_anchors: &'a HashMap<String, Value>,
+    /// Pre-computed `$anchor` registry for the root document.
+    pub(crate) anchors: &'a HashMap<String, Value>,
     /// Pre-compiled regexes keyed by pattern string.
     pub(crate) patterns: &'a HashMap<String, Regex>,
     /// Current evaluation nesting depth — prevents stack overflows on cyclic

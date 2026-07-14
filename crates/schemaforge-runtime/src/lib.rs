@@ -1,7 +1,8 @@
-//! Compile-time runtime plan constants for Schemaforge.
+//! Keyword phase catalog for the Schemaforge runtime.
 //!
-//! The [`RuntimePlan`] encodes the keyword-processing order and phase
-//! boundaries as Rust `const` data, eliminating runtime planning overhead.
+//! The [`RuntimePlan`] encodes keyword-processing order and phase boundaries
+//! as Rust `const` data.  This catalog is used by conformance differential
+//! tests and inspection tooling; a full plan evaluator is deferred.
 
 /// A single keyword entry in the runtime plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

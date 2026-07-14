@@ -42,13 +42,24 @@ fn apply_ref(
 
 /// Resolve a `$ref` URI, returning a reference into the schema tree.
 ///
-/// Fragment-only references (e.g. `#`, `#/$defs/Foo`) are resolved as JSON
-/// Pointers against the root schema document.  Absolute or relative URIs are
-/// looked up in the external registry.  Returns `None` when the target cannot
-/// be found, which callers treat as a validation failure.
+/// Fragment-only references are handled as follows:
+/// - `#` or `#/…` → resolved as a JSON Pointer against the root document.
+/// - `#name` (no leading `/` after `#`) → looked up as an anchor name, first
+///   in the `$anchor` table then in the `$dynamicAnchor` table.
+///
+/// Absolute or relative URIs are looked up in the external registry.
+/// Returns `None` when the target cannot be found, which callers treat as a
+/// validation failure.
 pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Option<&'a Value> {
-    if let Some(pointer) = ref_uri.strip_prefix('#') {
-        return resolve_json_pointer(ctx.root_schema, pointer);
+    if let Some(fragment) = ref_uri.strip_prefix('#') {
+        if fragment.is_empty() || fragment.starts_with('/') {
+            return resolve_json_pointer(ctx.root_schema, fragment);
+        }
+        // Non-pointer fragment: treat as an anchor name.
+        if let Some(schema) = ctx.anchors.get(fragment) {
+            return Some(schema);
+        }
+        return ctx.dynamic_anchors.get(fragment);
     }
     let key = build_registry_key(ref_uri, ctx.base_uri);
     ctx.registry.get(&key)
@@ -187,6 +198,41 @@ mod tests {
         });
         assert!(valid(&schema, &json!(["a", "b"])));
         assert!(!valid(&schema, &json!(["a", 1])));
+    }
+
+    #[test]
+    fn anchor_ref_resolves_to_anchor_schema() {
+        // $ref: "#anchorName" must resolve to the schema with $anchor: "anchorName".
+        let schema = json!({
+            "$defs": {
+                "StrField": {
+                    "$anchor": "myStr",
+                    "type": "string"
+                }
+            },
+            "properties": {
+                "name": {"$ref": "#myStr"}
+            }
+        });
+        assert!(valid(&schema, &json!({"name": "Alice"})));
+        assert!(!valid(&schema, &json!({"name": 42})));
+    }
+
+    #[test]
+    fn anchor_ref_with_unevaluated_properties() {
+        // $ref to $anchor target; properties from the anchor schema are evaluated.
+        let schema = json!({
+            "$defs": {
+                "Base": {
+                    "$anchor": "base",
+                    "properties": {"id": {"type": "integer"}}
+                }
+            },
+            "$ref": "#base",
+            "unevaluatedProperties": false
+        });
+        assert!(valid(&schema, &json!({"id": 1})));
+        assert!(!valid(&schema, &json!({"id": 1, "extra": "x"})));
     }
 
     #[test]

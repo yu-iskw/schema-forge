@@ -73,6 +73,9 @@ pub fn from_compile(e: CompileError) -> CliError {
         CompileError::UnsupportedKeyword { keyword } => {
             CliError::Parse(format!("unsupported schema keyword `{keyword}`"))
         }
+        CompileError::NodeLimitExceeded { limit } => {
+            CliError::Parse(format!("schema node count exceeded limit of {limit} nodes"))
+        }
     }
 }
 

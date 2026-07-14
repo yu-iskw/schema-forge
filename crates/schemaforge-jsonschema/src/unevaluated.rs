@@ -3,8 +3,8 @@
 //! This implementation collects evaluated names/indices from `properties`,
 //! `patternProperties`, `additionalProperties`, `prefixItems`, `items`, and
 //! `contains` at the current schema level, as well as property names declared
-//! in `allOf`, `anyOf`, `oneOf`, `if`/`then`/`else`, and `dependentSchemas`
-//! sub-schemas.
+//! in `allOf`, `anyOf`, `oneOf`, `if`/`then`/`else`, `dependentSchemas`,
+//! and sibling `$ref` sub-schemas.
 //!
 //! For `allOf` the union of every branch's properties is considered evaluated
 //! (all branches must pass).  For `anyOf`/`oneOf` only properties from
@@ -12,6 +12,13 @@
 //! For `if`/`then`/`else`, properties from the matching branch are included.
 //! For `dependentSchemas`, properties from each triggered dependent schema
 //! are included when its trigger property is present in the instance.
+//!
+//! A top-level sibling `$ref` is treated the same as an `allOf` branch ref:
+//! its declared `properties`, `patternProperties`, and `additionalProperties`
+//! are resolved and contribute to the evaluated set.
+//!
+//! Branch `additionalProperties` (when not `false`) marks all instance keys as
+//! evaluated for that branch.  Branch `patternProperties` marks matching keys.
 
 use std::collections::HashSet;
 
@@ -74,7 +81,8 @@ fn is_property_evaluated(
         return true;
     }
     // A property listed in a successful allOf/anyOf/oneOf branch's `properties`
-    // is considered evaluated by that applicator at this schema level.
+    // (or covered by a branch's additionalProperties/patternProperties) is
+    // considered evaluated by that applicator at this schema level.
     branch_props.contains(key)
 }
 
@@ -87,6 +95,8 @@ fn is_property_evaluated(
 /// - `if`/`then`/`else`: properties from the branch that matches the condition.
 /// - `dependentSchemas`: properties from each triggered schema when its trigger
 ///   key is present in the instance.
+/// - sibling `$ref`: treated like an additional allOf branch — properties from
+///   the referenced schema are unconditionally evaluated.
 ///
 /// If a branch contains `$ref` the referenced schema's `properties` are also
 /// collected (local fragment references only).
@@ -97,10 +107,17 @@ fn applicator_branch_evaluated_properties(
 ) -> HashSet<String> {
     let mut evaluated: HashSet<String> = HashSet::new();
 
+    // Top-level sibling $ref: resolve and collect as if it were an allOf branch.
+    if let Some(Value::String(ref_uri)) = obj.get("$ref")
+        && let Some(target) = crate::core::resolve_ref(ref_uri, ctx)
+    {
+        collect_branch_props_depth(target, instance, &mut evaluated, ctx, 0);
+    }
+
     // allOf: union all branches unconditionally (all must pass).
     if let Some(Value::Array(branches)) = obj.get("allOf") {
         for branch in branches {
-            collect_branch_props(branch, &mut evaluated, ctx);
+            collect_branch_props(branch, instance, &mut evaluated, ctx);
         }
     }
 
@@ -111,7 +128,7 @@ fn applicator_branch_evaluated_properties(
         };
         for branch in branches {
             if validate_schema(branch, instance, "", ctx).is_valid() {
-                collect_branch_props(branch, &mut evaluated, ctx);
+                collect_branch_props(branch, instance, &mut evaluated, ctx);
             }
         }
     }
@@ -140,12 +157,12 @@ fn collect_if_then_else_props(
         return;
     };
     // `if` always evaluates, regardless of outcome.
-    collect_branch_props(if_schema, evaluated, ctx);
+    collect_branch_props(if_schema, instance, evaluated, ctx);
 
     let condition_met = validate_schema(if_schema, instance, "", ctx).is_valid();
     let branch_key = if condition_met { "then" } else { "else" };
     if let Some(branch) = obj.get(branch_key) {
-        collect_branch_props(branch, evaluated, ctx);
+        collect_branch_props(branch, instance, evaluated, ctx);
     }
 }
 
@@ -164,7 +181,7 @@ fn collect_dependent_schemas_props(
     };
     for (trigger, dep_schema) in dep_schemas {
         if inst.contains_key(trigger) {
-            collect_branch_props(dep_schema, evaluated, ctx);
+            collect_branch_props(dep_schema, instance, evaluated, ctx);
         }
     }
 }
@@ -174,17 +191,22 @@ const MAX_BRANCH_REF_DEPTH: usize = 8;
 
 /// Collect property names declared in `branch.properties` (and in any schema
 /// reached via a local `$ref` chain or `allOf` nesting) into `evaluated`.
+///
+/// Also accounts for `additionalProperties` (not `false`) and
+/// `patternProperties` in the branch.
 fn collect_branch_props(
     branch: &Value,
+    instance: &Value,
     evaluated: &mut HashSet<String>,
     ctx: &ValidationContext<'_>,
 ) {
-    collect_branch_props_depth(branch, evaluated, ctx, 0);
+    collect_branch_props_depth(branch, instance, evaluated, ctx, 0);
 }
 
 /// Recursively collect branch properties up to `MAX_BRANCH_REF_DEPTH`.
 fn collect_branch_props_depth(
     branch: &Value,
+    instance: &Value,
     evaluated: &mut HashSet<String>,
     ctx: &ValidationContext<'_>,
     depth: usize,
@@ -195,15 +217,16 @@ fn collect_branch_props_depth(
     let Value::Object(obj) = branch else {
         return;
     };
-    collect_props_from_obj(obj, evaluated);
-    collect_allof_branch_props(obj, evaluated, ctx, depth);
-    follow_ref_branch_props(obj, evaluated, ctx, depth);
+    collect_props_from_obj(obj, instance, evaluated, ctx);
+    collect_allof_branch_props(obj, instance, evaluated, ctx, depth);
+    follow_ref_branch_props(obj, instance, evaluated, ctx, depth);
 }
 
 /// Collect property names from every `allOf` sub-schema (all must pass, so all
 /// declared properties are unconditionally considered evaluated).
 fn collect_allof_branch_props(
     obj: &Map<String, Value>,
+    instance: &Value,
     evaluated: &mut HashSet<String>,
     ctx: &ValidationContext<'_>,
     depth: usize,
@@ -212,13 +235,14 @@ fn collect_allof_branch_props(
         return;
     };
     for sub in all_of {
-        collect_branch_props_depth(sub, evaluated, ctx, depth + 1);
+        collect_branch_props_depth(sub, instance, evaluated, ctx, depth + 1);
     }
 }
 
 /// Follow a local `$ref` one hop and continue recursive collection.
 fn follow_ref_branch_props(
     obj: &Map<String, Value>,
+    instance: &Value,
     evaluated: &mut HashSet<String>,
     ctx: &ValidationContext<'_>,
     depth: usize,
@@ -229,13 +253,47 @@ fn follow_ref_branch_props(
     let Some(target) = crate::core::resolve_ref(ref_uri, ctx) else {
         return;
     };
-    collect_branch_props_depth(target, evaluated, ctx, depth + 1);
+    collect_branch_props_depth(target, instance, evaluated, ctx, depth + 1);
 }
 
-fn collect_props_from_obj(obj: &Map<String, Value>, evaluated: &mut HashSet<String>) {
+/// Collect property names from `obj` into `evaluated`.
+///
+/// - Explicit `properties` keys are always collected.
+/// - If `additionalProperties` is present and not `false`, all instance object
+///   keys are marked as evaluated (they are validated by `additionalProperties`
+///   for instance keys not in `properties`/`patternProperties`).
+/// - `patternProperties` patterns are matched against instance keys; matching
+///   keys are marked as evaluated.
+fn collect_props_from_obj(
+    obj: &Map<String, Value>,
+    instance: &Value,
+    evaluated: &mut HashSet<String>,
+    ctx: &ValidationContext<'_>,
+) {
     if let Some(Value::Object(props)) = obj.get("properties") {
         for key in props.keys() {
             evaluated.insert(key.clone());
+        }
+    }
+    let Value::Object(inst) = instance else {
+        return;
+    };
+    // additionalProperties (anything except `false`) evaluates the remaining
+    // instance keys not covered by properties/patternProperties.  Marking all
+    // instance keys is safe because keys already in `properties` are idempotent.
+    if let Some(ap) = obj.get("additionalProperties")
+        && ap != &Value::Bool(false)
+    {
+        for key in inst.keys() {
+            evaluated.insert(key.clone());
+        }
+    }
+    // patternProperties evaluates every instance key that matches any pattern.
+    if obj.contains_key("patternProperties") {
+        for key in inst.keys() {
+            if crate::applicator::matches_any_pattern_property(obj, key, ctx) {
+                evaluated.insert(key.clone());
+            }
         }
     }
 }
@@ -251,16 +309,16 @@ fn apply_unevaluated_items(
         return;
     };
 
-    let (effective_prefix_len, has_items) = items_eval_range(obj, ctx);
+    let (effective_prefix_len, has_items) = items_eval_range(obj, instance, ctx);
     // `items` evaluates every remaining index, so unevaluatedItems is a no-op.
     if has_items {
         return;
     }
 
-    let contains_schema = obj.get("contains");
     for (i, item) in items.iter().enumerate().skip(effective_prefix_len) {
-        // Draft 2020-12 §11.2: items matching `contains` are evaluated.
-        if contains_schema.is_some_and(|schema| validate_schema(schema, item, "", ctx).is_valid()) {
+        // Draft 2020-12 §11.2: items matching `contains` (including those from
+        // allOf/$ref targets) are evaluated.
+        if item_matches_any_contains(obj, item, ctx, 0) {
             continue;
         }
         let item_path = format!("{path}/{i}");
@@ -268,11 +326,53 @@ fn apply_unevaluated_items(
     }
 }
 
+/// Return `true` when `item` matches a `contains` schema from `obj`, any of
+/// its `allOf` branches, or through a `$ref` chain.
+fn item_matches_any_contains(
+    obj: &Map<String, Value>,
+    item: &Value,
+    ctx: &ValidationContext<'_>,
+    depth: usize,
+) -> bool {
+    if depth > MAX_BRANCH_REF_DEPTH {
+        return false;
+    }
+    if let Some(contains) = obj.get("contains")
+        && validate_schema(contains, item, "", ctx).is_valid()
+    {
+        return true;
+    }
+    if let Some(Value::Array(branches)) = obj.get("allOf") {
+        for branch in branches {
+            if let Value::Object(b) = branch
+                && item_matches_any_contains(b, item, ctx, depth + 1)
+            {
+                return true;
+            }
+        }
+    }
+    if let Some(Value::String(ref_uri)) = obj.get("$ref")
+        && let Some(Value::Object(target)) = crate::core::resolve_ref(ref_uri, ctx)
+        && item_matches_any_contains(target, item, ctx, depth + 1)
+    {
+        return true;
+    }
+    false
+}
+
 /// Return `(effective_prefix_len, has_items)` by merging the direct schema
-/// keywords with any `items`/`prefixItems` found inside `allOf` branches or
-/// through `$ref` chains (analogous to property collection for
-/// `unevaluatedProperties`).
-fn items_eval_range(obj: &Map<String, Value>, ctx: &ValidationContext<'_>) -> (usize, bool) {
+/// keywords with any `items`/`prefixItems` found inside `allOf`/`anyOf`/`oneOf`
+/// branches, a sibling `$ref`, or through `$ref` chains (analogous to property
+/// collection for `unevaluatedProperties`).
+///
+/// For `allOf` all branches contribute unconditionally.  For `anyOf`/`oneOf`
+/// only branches that actually validate the instance contribute.  A sibling
+/// `$ref` is treated like an extra allOf branch.
+fn items_eval_range(
+    obj: &Map<String, Value>,
+    instance: &Value,
+    ctx: &ValidationContext<'_>,
+) -> (usize, bool) {
     let direct_prefix = obj
         .get("prefixItems")
         .and_then(Value::as_array)
@@ -281,10 +381,36 @@ fn items_eval_range(obj: &Map<String, Value>, ctx: &ValidationContext<'_>) -> (u
 
     let mut branch_prefix = 0usize;
     let mut branch_items = false;
+
+    // allOf: all branches must pass — include unconditionally.
     if let Some(Value::Array(branches)) = obj.get("allOf") {
         for branch in branches {
             collect_branch_items_eval(branch, &mut branch_prefix, &mut branch_items, ctx, 0);
         }
+    }
+
+    // anyOf/oneOf: only include from branches the instance actually validates.
+    for applicator_key in &["anyOf", "oneOf"] {
+        if let Some(Value::Array(branches)) = obj.get(*applicator_key) {
+            for branch in branches {
+                if validate_schema(branch, instance, "", ctx).is_valid() {
+                    collect_branch_items_eval(
+                        branch,
+                        &mut branch_prefix,
+                        &mut branch_items,
+                        ctx,
+                        0,
+                    );
+                }
+            }
+        }
+    }
+
+    // Top-level sibling $ref: treated like an additional allOf branch.
+    if let Some(Value::String(ref_uri)) = obj.get("$ref")
+        && let Some(target) = crate::core::resolve_ref(ref_uri, ctx)
+    {
+        collect_branch_items_eval(target, &mut branch_prefix, &mut branch_items, ctx, 0);
     }
 
     (
@@ -537,6 +663,86 @@ mod tests {
         );
     }
 
+    // ── Sibling $ref + unevaluatedProperties ─────────────────────────────────
+
+    #[test]
+    fn unevaluated_properties_sibling_ref_properties_evaluated() {
+        // When a schema has a top-level `$ref` alongside `unevaluatedProperties`,
+        // properties declared in the `$ref` target must be considered evaluated.
+        let s = json!({
+            "$defs": {
+                "Base": {"properties": {"id": {"type": "integer"}}}
+            },
+            "$ref": "#/$defs/Base",
+            "unevaluatedProperties": false
+        });
+        assert!(
+            valid(&s, &json!({"id": 1})),
+            "property from sibling $ref target must be treated as evaluated"
+        );
+        assert!(
+            !valid(&s, &json!({"id": 1, "extra": "x"})),
+            "unevaluated extra property must still be rejected"
+        );
+    }
+
+    #[test]
+    fn unevaluated_properties_sibling_ref_with_allof_evaluated() {
+        // Sibling $ref combined with allOf: both contribute evaluated properties.
+        let s = json!({
+            "$defs": {
+                "Base": {"properties": {"id": {"type": "integer"}}},
+                "Named": {"properties": {"name": {"type": "string"}}}
+            },
+            "$ref": "#/$defs/Base",
+            "allOf": [{"$ref": "#/$defs/Named"}],
+            "unevaluatedProperties": false
+        });
+        assert!(
+            valid(&s, &json!({"id": 1, "name": "Alice"})),
+            "properties from both sibling $ref and allOf must be evaluated"
+        );
+        assert!(
+            !valid(&s, &json!({"id": 1, "name": "Alice", "x": 0})),
+            "any unevaluated key must still be rejected"
+        );
+    }
+
+    // ── Branch additionalProperties evaluates all instance keys ───────────────
+
+    #[test]
+    fn unevaluated_properties_branch_additional_properties_evaluates_all_keys() {
+        // When a successful allOf branch has additionalProperties (not false),
+        // all instance keys are considered evaluated by that branch.
+        let s = json!({
+            "allOf": [{"additionalProperties": {"type": "integer"}}],
+            "unevaluatedProperties": false
+        });
+        // All keys are evaluated by the branch's additionalProperties.
+        assert!(
+            valid(&s, &json!({"a": 1, "b": 2})),
+            "keys evaluated by branch additionalProperties must not be rejected"
+        );
+    }
+
+    #[test]
+    fn unevaluated_properties_branch_pattern_properties_evaluates_matching_keys() {
+        // When a successful allOf branch has patternProperties, instance keys
+        // matching the pattern are considered evaluated.
+        let s = json!({
+            "allOf": [{"patternProperties": {"^x-": {"type": "string"}}}],
+            "unevaluatedProperties": false
+        });
+        assert!(
+            valid(&s, &json!({"x-foo": "bar"})),
+            "key matching branch patternProperties must be considered evaluated"
+        );
+        assert!(
+            !valid(&s, &json!({"y-foo": "bar"})),
+            "key not matching branch pattern must still be rejected"
+        );
+    }
+
     // ── unevaluatedItems + contains ───────────────────────────────────────────
 
     #[test]
@@ -556,6 +762,23 @@ mod tests {
         assert!(
             !valid(&s, &json!(["hello", 42])),
             "item not matching contains must be rejected by unevaluatedItems"
+        );
+    }
+
+    #[test]
+    fn unevaluated_items_allof_contains_evaluates_matching_items() {
+        // `contains` from an allOf branch must also mark matching items as evaluated.
+        let s = json!({
+            "allOf": [{"contains": {"type": "string"}}],
+            "unevaluatedItems": false
+        });
+        assert!(
+            valid(&s, &json!(["hello"])),
+            "item matching allOf branch contains must be treated as evaluated"
+        );
+        assert!(
+            !valid(&s, &json!(["hello", 42])),
+            "item not matching any contains must be rejected"
         );
     }
 
@@ -595,6 +818,76 @@ mod tests {
             !valid(&s, &json!(["hello", 42])),
             "item beyond allOf prefixItems range must still be rejected"
         );
+    }
+
+    // ── Sibling $ref + unevaluatedItems ──────────────────────────────────────
+
+    #[test]
+    fn unevaluated_items_sibling_ref_prefix_items_evaluated() {
+        // A top-level $ref alongside unevaluatedItems; prefixItems in the $ref
+        // target must mark the covered prefix as evaluated.
+        let s = json!({
+            "$defs": {
+                "TwoStrings": {"prefixItems": [{"type": "string"}, {"type": "string"}]}
+            },
+            "$ref": "#/$defs/TwoStrings",
+            "unevaluatedItems": false
+        });
+        // Indices 0 and 1 covered by $ref target's prefixItems → evaluated.
+        assert!(
+            valid(&s, &json!(["a", "b"])),
+            "items in sibling $ref target prefixItems must be evaluated"
+        );
+        // Index 2 is beyond the prefix → rejected.
+        assert!(
+            !valid(&s, &json!(["a", "b", "c"])),
+            "item beyond sibling $ref target prefix must be rejected"
+        );
+    }
+
+    #[test]
+    fn unevaluated_items_sibling_ref_items_evaluates_all() {
+        // A top-level $ref with `items` in the target means all items are
+        // evaluated by that branch.
+        let s = json!({
+            "$defs": {
+                "IntList": {"items": {"type": "integer"}}
+            },
+            "$ref": "#/$defs/IntList",
+            "unevaluatedItems": false
+        });
+        assert!(
+            valid(&s, &json!([1, 2, 3])),
+            "items evaluated by sibling $ref target items must not be rejected"
+        );
+    }
+
+    // ── unevaluatedItems anyOf/oneOf ──────────────────────────────────────────
+
+    #[test]
+    fn unevaluated_items_anyof_failed_branch_prefix_not_counted() {
+        // anyOf branch 0 requires type=string (will fail for arrays),
+        // branch 1 has a prefixItems covering index 0.
+        // Only branch 1 succeeds so only its prefix should count.
+        let s = json!({
+            "anyOf": [
+                // Branch 0: valid for strings only, has 3-item prefixItems
+                {"type": "string", "prefixItems": [true, true, true]},
+                // Branch 1: valid for anything, covers index 0
+                {"prefixItems": [{"type": "integer"}]}
+            ],
+            "unevaluatedItems": false
+        });
+        let instance = json!([1, 99]);
+        // Branch 0 fails (not a string), so its prefixItems (covering 3 items)
+        // must NOT count.  Branch 1 succeeds and covers index 0 only.
+        // Index 1 is unevaluated → rejected.
+        assert!(
+            !valid(&s, &instance),
+            "item beyond successful-branch prefix must be rejected"
+        );
+        // Instance with only index 0 should pass.
+        assert!(valid(&s, &json!([1])));
     }
 
     // ── unevaluatedProperties + if/then/else ──────────────────────────────────
