@@ -45,6 +45,29 @@ pub(crate) fn apply(
     apply_unevaluated_items(obj, instance, path, ctx, out);
 }
 
+/// Emit a fail-closed depth-exceeded error for `keyword` when `exceeded`.
+///
+/// Returns `true` when the caller should abort (incomplete evaluated set).
+fn fail_on_branch_depth_exceeded(
+    exceeded: bool,
+    path: &str,
+    keyword: &str,
+    out: &mut ValidationOutput,
+) -> bool {
+    if !exceeded {
+        return false;
+    }
+    out.merge(ValidationOutput::fail(ValidationError::new(
+        path,
+        format!("{path}/{keyword}"),
+        format!(
+            "{keyword} analysis aborted: \
+             schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
+        ),
+    )));
+    true
+}
+
 fn apply_unevaluated_properties(
     obj: &Map<String, Value>,
     instance: &Value,
@@ -61,15 +84,7 @@ fn apply_unevaluated_properties(
     // Build once — not per instance key — so large objects don't re-walk
     // allOf/anyOf/oneOf branches on every property.
     let (branch_props, depth_exceeded) = applicator_branch_evaluated_properties(obj, instance, ctx);
-    if depth_exceeded {
-        out.merge(ValidationOutput::fail(ValidationError::new(
-            path,
-            format!("{path}/unevaluatedProperties"),
-            format!(
-                "unevaluatedProperties analysis aborted: \
-                 schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
-            ),
-        )));
+    if fail_on_branch_depth_exceeded(depth_exceeded, path, "unevaluatedProperties", out) {
         return;
     }
     for (key, value) in inst {
@@ -205,13 +220,9 @@ fn applicator_branch_evaluated_properties(
     // Top-level applicators only — local `properties` are handled separately
     // by `is_property_evaluated`.
     for_each_child_schema(obj, instance, ctx, |branch| {
-        if collect_branch_props_depth(branch, instance, &mut evaluated, ctx, 0) {
-            exceeded = true;
-        }
+        exceeded |= collect_branch_props_depth(branch, instance, &mut evaluated, ctx, 0);
     });
-    if collect_dependent_schemas_props(obj, instance, ctx, &mut evaluated, 0) {
-        exceeded = true;
-    }
+    exceeded |= collect_dependent_schemas_props(obj, instance, ctx, &mut evaluated, 0);
     (evaluated, exceeded)
 }
 
@@ -235,10 +246,8 @@ fn collect_dependent_schemas_props(
     };
     let mut exceeded = false;
     for (trigger, dep_schema) in dep_schemas {
-        if inst.contains_key(trigger)
-            && collect_branch_props_depth(dep_schema, instance, evaluated, ctx, depth)
-        {
-            exceeded = true;
+        if inst.contains_key(trigger) {
+            exceeded |= collect_branch_props_depth(dep_schema, instance, evaluated, ctx, depth);
         }
     }
     exceeded
@@ -265,9 +274,7 @@ fn collect_branch_props_depth(
     // Nested `dependentSchemas` (e.g. under allOf / $ref) contribute when triggered.
     let mut exceeded = collect_dependent_schemas_props(obj, instance, ctx, evaluated, depth + 1);
     for_each_child_schema(obj, instance, ctx, |sub| {
-        if collect_branch_props_depth(sub, instance, evaluated, ctx, depth + 1) {
-            exceeded = true;
-        }
+        exceeded |= collect_branch_props_depth(sub, instance, evaluated, ctx, depth + 1);
     });
     exceeded
 }
@@ -332,30 +339,14 @@ fn apply_unevaluated_items(
     if has_items {
         return;
     }
-    if depth_exceeded_items {
-        out.merge(ValidationOutput::fail(ValidationError::new(
-            path,
-            format!("{path}/unevaluatedItems"),
-            format!(
-                "unevaluatedItems analysis aborted: \
-                 schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
-            ),
-        )));
+    if fail_on_branch_depth_exceeded(depth_exceeded_items, path, "unevaluatedItems", out) {
         return;
     }
 
     // Collect contains schemas once — not per array element — so large arrays
     // don't re-walk allOf/anyOf/$ref for every index.
     let (contains_schemas, depth_exceeded_contains) = collect_contains_schemas(obj, instance, ctx);
-    if depth_exceeded_contains {
-        out.merge(ValidationOutput::fail(ValidationError::new(
-            path,
-            format!("{path}/unevaluatedItems"),
-            format!(
-                "unevaluatedItems analysis aborted: \
-                 schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
-            ),
-        )));
+    if fail_on_branch_depth_exceeded(depth_exceeded_contains, path, "unevaluatedItems", out) {
         return;
     }
 
@@ -406,10 +397,8 @@ fn collect_contains_schemas_depth<'a>(
     }
     let mut exceeded = false;
     for_each_child_schema(obj, instance, ctx, |branch| {
-        if let Value::Object(b) = branch
-            && collect_contains_schemas_depth(b, instance, ctx, depth + 1, out)
-        {
-            exceeded = true;
+        if let Value::Object(b) = branch {
+            exceeded |= collect_contains_schemas_depth(b, instance, ctx, depth + 1, out);
         }
     });
     exceeded
@@ -452,10 +441,9 @@ fn collect_items_eval_depth(
     }
     let mut exceeded = false;
     for_each_child_schema(obj, instance, ctx, |branch| {
-        if let Value::Object(b) = branch
-            && collect_items_eval_depth(b, instance, ctx, depth + 1, max_prefix, has_items)
-        {
-            exceeded = true;
+        if let Value::Object(b) = branch {
+            exceeded |=
+                collect_items_eval_depth(b, instance, ctx, depth + 1, max_prefix, has_items);
         }
     });
     exceeded
