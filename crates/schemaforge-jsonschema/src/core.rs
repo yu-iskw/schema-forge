@@ -47,7 +47,8 @@ fn apply_ref(
 ///
 /// Fragment-only references are handled as follows:
 /// - `#` or `#/…` → resolved as a JSON Pointer against the root document.
-/// - `#name` (no leading `/` after `#`) → looked up in the `$anchor` table.
+/// - `#name` (no leading `/` after `#`) → looked up in the root document's
+///   `$anchor` table only (key `""`).
 ///
 /// External URIs (with or without a fragment) are resolved against the
 /// registry:
@@ -56,9 +57,10 @@ fn apply_ref(
 /// 3. The fragment is applied against the base document:
 ///    - Empty fragment → return the document root.
 ///    - `/…` fragment → follow as a JSON Pointer (RFC 6901).
-///    - Non-`/` fragment → treat as a `$anchor` name in the shared anchor
-///      table (populated at construction time for both the root schema and
-///      any schema added via [`crate::Validator::add_schema`]).
+///    - Non-`/` fragment → treat as a `$anchor` name looked up **only** in
+///      that document's own anchor table.  Anchors from other documents are
+///      never consulted, so a `urn:other#name` ref cannot accidentally match
+///      an anchor defined in the root or a third schema.
 ///
 /// Returns `None` when the target cannot be found, which callers treat as a
 /// validation failure.
@@ -67,8 +69,8 @@ pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Opt
         if fragment.is_empty() || fragment.starts_with('/') {
             return resolve_json_pointer(ctx.root_schema, fragment);
         }
-        // Non-pointer fragment: treat as a static anchor name.
-        return ctx.anchors.get(fragment);
+        // Non-pointer fragment: look up anchor in the root document only.
+        return ctx.anchors_by_doc.get("").and_then(|a| a.get(fragment));
     }
 
     // External reference: split off any fragment before the registry look-up.
@@ -81,10 +83,8 @@ pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Opt
     } else if fragment.starts_with('/') {
         resolve_json_pointer(doc, fragment)
     } else {
-        // Non-pointer fragment on an external URI: look up as an anchor name.
-        // Anchors from external schemas are merged into ctx.anchors by
-        // Validator::add_schema so they are always available here.
-        ctx.anchors.get(fragment)
+        // Non-pointer fragment: look up anchor only in that document's table.
+        ctx.anchors_by_doc.get(&key).and_then(|a| a.get(fragment))
     }
 }
 
@@ -254,6 +254,47 @@ mod tests {
         });
         assert!(valid(&schema, &json!({"home": {"city": "Berlin"}})));
         assert!(!valid(&schema, &json!({"home": {"city": 42}})));
+    }
+
+    // ── Per-document anchor isolation ─────────────────────────────────────────
+
+    #[test]
+    fn external_anchor_resolves_only_in_its_own_doc() {
+        // `"$ref": "urn:ext#anchor"` must find the anchor in `urn:ext` only,
+        // not in the root schema or any other document.
+        let root = json!({"$ref": "urn:ext#remoteAnchor"});
+        let mut v = Validator::new(&root, ValidationOptions::default()).unwrap();
+        let external = json!({"$anchor": "remoteAnchor", "type": "integer"});
+        v.add_schema("urn:ext", external).unwrap();
+        assert!(
+            v.validate(&json!(1)).is_valid(),
+            "external anchor must be reachable via urn:ext#remoteAnchor"
+        );
+        assert!(
+            !v.validate(&json!("not-int")).is_valid(),
+            "anchor schema constraints must apply"
+        );
+    }
+
+    #[test]
+    fn root_anchor_not_reachable_via_foreign_uri_ref() {
+        // An anchor defined only in the root schema must NOT be resolved when
+        // the $ref names an unrelated external document.
+        let root = json!({
+            "$defs": {
+                "Root": {"$anchor": "rootAnchor", "type": "string"}
+            },
+            // This ref asks for "rootAnchor" from urn:ext, which doesn't have it.
+            "$ref": "urn:ext#rootAnchor"
+        });
+        let mut v = Validator::new(&root, ValidationOptions::default()).unwrap();
+        let external = json!({"type": "object"});
+        v.add_schema("urn:ext", external).unwrap();
+        // urn:ext has no anchor named "rootAnchor", so the ref must fail.
+        assert!(
+            !v.validate(&json!("hello")).is_valid(),
+            "anchor from root must not resolve via an external URI ref"
+        );
     }
 
     // ── External $ref resolution (fix #3) ────────────────────────────────────

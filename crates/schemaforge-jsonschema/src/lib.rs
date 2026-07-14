@@ -128,8 +128,14 @@ pub struct Validator {
     /// Pre-loaded additional schemas keyed by their `$id`.
     registry: HashMap<String, Value>,
     formats: FormatRegistry,
-    /// `$anchor` -> schema extracted from the root document.
-    anchors: HashMap<String, Value>,
+    /// Per-document `$anchor` tables.
+    ///
+    /// The root document's anchors are stored under the empty string key `""`.
+    /// When `ValidationOptions::base_uri` is non-empty the root anchors are
+    /// also mirrored under that URI so that self-referencing via the full URI
+    /// resolves correctly.  Each schema added via [`Validator::add_schema`]
+    /// has its anchors stored under the id passed to that method.
+    anchors_by_doc: HashMap<String, HashMap<String, Value>>,
     /// Pre-compiled regexes for every `pattern` and `patternProperties` key
     /// found in the schema tree.  Keyed by the raw pattern string.
     patterns: HashMap<String, Regex>,
@@ -150,7 +156,12 @@ impl Validator {
             formats.assert_all();
         }
         check_for_unsupported_keywords(schema)?;
-        let anchors = collect_anchors(schema)?;
+        let root_anchors = collect_anchors(schema)?;
+        let mut anchors_by_doc: HashMap<String, HashMap<String, Value>> = HashMap::new();
+        if !options.base_uri.is_empty() {
+            anchors_by_doc.insert(options.base_uri.clone(), root_anchors.clone());
+        }
+        anchors_by_doc.insert(String::new(), root_anchors);
         let mut patterns = HashMap::new();
         collect_patterns_recursive(schema, &mut patterns)?;
         Ok(Self {
@@ -158,7 +169,7 @@ impl Validator {
             options,
             registry: HashMap::new(),
             formats,
-            anchors,
+            anchors_by_doc,
             patterns,
         })
     }
@@ -168,21 +179,26 @@ impl Validator {
     /// Patterns from the added schema are precompiled and merged into the
     /// validator's pattern cache so they are available during validation.
     ///
-    /// `$anchor` names found in the added schema are merged into the shared
-    /// anchor table.  An anchor name that already exists — whether from the
-    /// root schema or a previously added external schema — is rejected to
-    /// prevent silent ambiguity.
+    /// `$anchor` names found in the added schema are collected into a
+    /// per-document anchor table keyed by `id`.  Duplicate anchor names
+    /// within the same document are rejected with
+    /// [`SchemaError::DuplicateAnchor`].  The same anchor name may appear
+    /// in different documents without conflict; anchors are always looked up
+    /// against the document that owns the `$ref`, preventing accidental
+    /// cross-document resolution.
     ///
     /// # Errors
     ///
     /// Returns [`SchemaError`] when the added schema contains an invalid
-    /// regular expression, unsupported keywords, or `$anchor` names that
-    /// duplicate any already-registered anchor.
+    /// regular expression, unsupported keywords, or duplicate `$anchor`
+    /// names within the same document.
     pub fn add_schema(&mut self, id: impl Into<String>, schema: Value) -> Result<(), SchemaError> {
+        let id_str = id.into();
         check_for_unsupported_keywords(&schema)?;
         collect_patterns_recursive(&schema, &mut self.patterns)?;
-        collect_anchors_recursive(&schema, &mut self.anchors)?;
-        self.registry.insert(id.into(), schema);
+        let doc_anchors = collect_anchors(&schema)?;
+        self.anchors_by_doc.insert(id_str.clone(), doc_anchors);
+        self.registry.insert(id_str, schema);
         Ok(())
     }
 
@@ -196,7 +212,7 @@ impl Validator {
             formats: &self.formats,
             base_uri: &self.options.base_uri,
             root_schema: &self.schema,
-            anchors: &self.anchors,
+            anchors_by_doc: &self.anchors_by_doc,
             patterns: &self.patterns,
             depth: Cell::new(0),
         };
@@ -413,8 +429,9 @@ pub(crate) struct ValidationContext<'a> {
     pub(crate) base_uri: &'a str,
     /// The root schema document (used for local `$ref` JSON Pointer resolution).
     pub(crate) root_schema: &'a Value,
-    /// Pre-computed `$anchor` registry for the root document.
-    pub(crate) anchors: &'a HashMap<String, Value>,
+    /// Per-document `$anchor` tables.  Root doc is keyed by `""`.  External
+    /// docs are keyed by the id passed to [`Validator::add_schema`].
+    pub(crate) anchors_by_doc: &'a HashMap<String, HashMap<String, Value>>,
     /// Pre-compiled regexes keyed by pattern string.
     pub(crate) patterns: &'a HashMap<String, Regex>,
     /// Current evaluation nesting depth — prevents stack overflows on cyclic
@@ -995,13 +1012,14 @@ mod tests {
         );
     }
 
-    // ── add_schema collects anchors (fix #4) ──────────────────────────────────
+    // ── per-document anchor isolation ─────────────────────────────────────────
 
     #[test]
-    fn add_schema_collects_anchors_into_shared_table() {
-        // An anchor defined in an external schema added via add_schema must be
-        // resolvable from the root schema via a #anchor-name $ref.
-        let root = json!({"$ref": "#myAnchor"});
+    fn external_anchor_resolves_via_external_uri_ref() {
+        // An anchor in an external schema must be reachable only through the
+        // external document URI (e.g. `"$ref": "urn:ext#myAnchor"`), not via a
+        // root-fragment ref (`"$ref": "#myAnchor"`).
+        let root = json!({"$ref": "urn:ext#myAnchor"});
         let mut v = Validator::new(&root, ValidationOptions::default()).unwrap();
         let external = json!({
             "$defs": {
@@ -1011,7 +1029,7 @@ mod tests {
         v.add_schema("urn:ext", external).unwrap();
         assert!(
             v.validate(&json!("hello")).is_valid(),
-            "anchor from external schema must be resolvable"
+            "external anchor reachable via `urn:ext#myAnchor`"
         );
         assert!(
             !v.validate(&json!(42)).is_valid(),
@@ -1020,21 +1038,35 @@ mod tests {
     }
 
     #[test]
-    fn add_schema_rejects_duplicate_anchor_across_schemas() {
-        // If a previously registered anchor name appears in a newly added
-        // schema, add_schema must return SchemaError::DuplicateAnchor.
+    fn foreign_anchor_not_reachable_via_root_ref() {
+        // `"$ref": "#name"` looks up anchors in the root document only.
+        // An anchor defined solely in an external schema must NOT resolve.
+        let root = json!({"$ref": "#myAnchor"});
+        let mut v = Validator::new(&root, ValidationOptions::default()).unwrap();
+        let external = json!({
+            "$defs": {
+                "Str": {"$anchor": "myAnchor", "type": "string"}
+            }
+        });
+        v.add_schema("urn:ext", external).unwrap();
+        // The ref is unresolved, so validation must fail.
+        assert!(
+            !v.validate(&json!("hello")).is_valid(),
+            "root #anchor ref must not reach anchor defined only in external schema"
+        );
+    }
+
+    #[test]
+    fn same_anchor_name_in_different_docs_is_allowed() {
+        // The same anchor name may appear in the root and in an external
+        // document without conflict; each is scoped to its own document.
         let root = json!({"$anchor": "shared", "type": "string"});
         let mut v = Validator::new(&root, ValidationOptions::default()).unwrap();
         let ext = json!({"$anchor": "shared", "type": "integer"});
-        let result = v.add_schema("urn:ext", ext);
         assert!(
-            result.is_err(),
-            "add_schema must reject anchor names that duplicate the root schema"
+            v.add_schema("urn:ext", ext).is_ok(),
+            "same anchor name in different documents must not be rejected"
         );
-        match result.unwrap_err() {
-            SchemaError::DuplicateAnchor { name } => assert_eq!(name, "shared"),
-            other => panic!("expected DuplicateAnchor, got {other}"),
-        }
     }
 
     // ── $anchor collision ─────────────────────────────────────────────────────
