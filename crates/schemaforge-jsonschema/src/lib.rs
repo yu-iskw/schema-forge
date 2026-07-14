@@ -691,6 +691,57 @@ mod tests {
         assert!(!v.validate(&json!(42)).is_valid());
     }
 
+    #[test]
+    fn allof_failure_instance_path_is_instance_not_schema_path() {
+        // A required-field failure inside an allOf branch must report the
+        // instance path (the object location), not the schema path
+        // ("/allOf/0").  This ensures callers can locate the failing value
+        // in the instance rather than in the schema.
+        let schema = json!({
+            "allOf": [
+                {"required": ["name"]}
+            ]
+        });
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&json!({}));
+        assert!(!out.is_valid());
+        for err in &out.errors {
+            assert!(
+                !err.instance_path.contains("allOf"),
+                "instance_path must not contain 'allOf': got {:?}",
+                err.instance_path
+            );
+        }
+    }
+
+    #[test]
+    fn allof_nested_field_failure_instance_path_reflects_field() {
+        // A failure on a nested field under allOf must report the field's
+        // instance path, e.g. "/name", not "/allOf/0/name".
+        let schema = json!({
+            "type": "object",
+            "allOf": [
+                {
+                    "properties": {
+                        "name": {"type": "string"}
+                    }
+                }
+            ]
+        });
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&json!({"name": 42}));
+        assert!(!out.is_valid());
+        let has_name_path = out
+            .errors
+            .iter()
+            .any(|e| e.instance_path == "/name" || e.instance_path.ends_with("/name"));
+        assert!(
+            has_name_path,
+            "expected an error at /name, got: {:#?}",
+            out.errors
+        );
+    }
+
     // ── Invalid pattern guards ────────────────────────────────────────────────
 
     #[test]

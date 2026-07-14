@@ -441,7 +441,7 @@ fn load_from_path(
     // This narrows the TOCTOU window: a symlink created between the initial
     // jail check and open will be resolved by the OS at open time, and then
     // caught by the re-canonicalize check below before any bytes are read.
-    let mut file = std::fs::File::open(&path).map_err(|e| ResolveError::IoError {
+    let file = std::fs::File::open(&path).map_err(|e| ResolveError::IoError {
         uri: uri.to_owned(),
         reason: e.to_string(),
     })?;
@@ -462,8 +462,24 @@ fn load_from_path(
         }
     }
 
-    // Guard against large files before allocating a read buffer.
-    let file_len = file.metadata().map_or(0, |m| m.len());
+    // Stat the open file descriptor. Fail-closed: any metadata failure is treated
+    // as an IO error rather than silently continuing with unknown file properties.
+    let metadata = file.metadata().map_err(|e| ResolveError::IoError {
+        uri: uri.to_owned(),
+        reason: format!("cannot stat file: {e}"),
+    })?;
+
+    // Reject non-regular files (FIFOs, sockets, devices, directories).
+    // A FIFO would block forever on read; devices may produce unbounded data.
+    if !metadata.file_type().is_file() {
+        return Err(ResolveError::IoError {
+            uri: uri.to_owned(),
+            reason: "not a regular file (FIFO, device, socket, or directory)".to_owned(),
+        });
+    }
+
+    // Guard against large files using the size from stat.
+    let file_len = metadata.len();
     if file_len > max_bytes {
         return Err(ResolveError::SizeExceeded {
             uri: uri.to_owned(),
@@ -472,12 +488,25 @@ fn load_from_path(
         });
     }
 
+    // Use take(max_bytes + 1) so that if the file grows between stat and read
+    // we still cap the read at a safe bound and detect the excess.
     let mut text = String::new();
-    file.read_to_string(&mut text)
+    file.take(max_bytes + 1)
+        .read_to_string(&mut text)
         .map_err(|e| ResolveError::IoError {
             uri: uri.to_owned(),
             reason: e.to_string(),
         })?;
+
+    // Belt-and-suspenders: if more than max_bytes were read (file grew after stat),
+    // reject with SizeExceeded rather than silently accepting oversized content.
+    if text.len() as u64 > max_bytes {
+        return Err(ResolveError::SizeExceeded {
+            uri: uri.to_owned(),
+            size: text.len(),
+            limit: max_bytes as usize,
+        });
+    }
 
     serde_json::from_str(&text).map_err(|e| ResolveError::ParseError {
         uri: uri.to_owned(),
@@ -1028,6 +1057,74 @@ mod tests {
             "expected Ok for file within size limit, got {result:?}"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Verify that a directory path inside the jail is rejected as a non-regular
+    /// file rather than being read as a schema.  On Linux/Unix, opening a
+    /// directory succeeds but `file_type().is_file()` returns false, so the
+    /// resolver must return IoError before attempting any read.
+    #[cfg(unix)]
+    #[test]
+    fn file_resolver_rejects_directory_as_non_regular_file() {
+        let base = std::env::temp_dir().join("schemaforge_dir_reject_test");
+        let inner = base.join("subdir");
+        std::fs::create_dir_all(&inner).unwrap();
+
+        let r = FileResolver::with_base_dir(&base);
+        // Point the URI at the inner subdirectory, which is inside the jail.
+        let uri = format!("file://{}", inner.display());
+        let result = r.resolve("", &uri);
+        assert!(
+            matches!(result, Err(ResolveError::IoError { .. })),
+            "expected IoError for directory, got {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Verify that a FIFO (named pipe) inside the jail is rejected as a
+    /// non-regular file.  A background thread opens the write end of the FIFO
+    /// so that File::open on the read end unblocks, and the is_file() check
+    /// then fires before any blocking read.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn file_resolver_rejects_fifo() {
+        let dir = std::env::temp_dir().join("schemaforge_fifo_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("pipe.json");
+        let _ = std::fs::remove_file(&fifo);
+
+        // Create the named pipe using the mkfifo command (avoids unsafe code).
+        let status = std::process::Command::new("mkfifo")
+            .arg(fifo.to_str().unwrap())
+            .status()
+            .expect("mkfifo command not found");
+        assert!(status.success(), "mkfifo failed: {status}");
+
+        // Spawn a writer thread that opens the write end of the FIFO and then
+        // immediately closes it.  This unblocks the reader open in the resolver
+        // so the test doesn't deadlock.
+        let fifo_clone = fifo.clone();
+        let writer = std::thread::spawn(move || {
+            let _w = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&fifo_clone)
+                .ok();
+        });
+
+        let r = FileResolver::with_base_dir(&dir);
+        let uri = format!("file://{}", fifo.display());
+        let result = r.resolve("", &uri);
+
+        let _ = writer.join();
+
+        assert!(
+            matches!(result, Err(ResolveError::IoError { .. })),
+            "expected IoError for FIFO, got {result:?}"
+        );
+
+        let _ = std::fs::remove_file(&fifo);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

@@ -39,9 +39,10 @@ fn apply_all_of(
     let Some(Value::Array(schemas)) = obj.get("allOf") else {
         return;
     };
-    for (i, s) in schemas.iter().enumerate() {
-        let kpath = format!("{path}/allOf/{i}");
-        out.merge(validate_schema(s, instance, &kpath, ctx));
+    for s in schemas {
+        // Pass the instance path (path) so that errors report where in the
+        // instance the failure occurred, not where in the schema.
+        out.merge(validate_schema(s, instance, path, ctx));
     }
 }
 
@@ -253,8 +254,9 @@ fn apply_dependent_schemas(
     };
     for (trigger, dep_schema) in dep_schemas {
         if inst.contains_key(trigger) {
-            let kpath = format!("{path}/dependentSchemas/{trigger}");
-            out.merge(validate_schema(dep_schema, instance, &kpath, ctx));
+            // Pass the instance path so errors point at the instance location,
+            // not at the schema location (dependentSchemas/{trigger}).
+            out.merge(validate_schema(dep_schema, instance, path, ctx));
         }
     }
 }

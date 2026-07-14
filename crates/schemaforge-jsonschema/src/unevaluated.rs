@@ -2,7 +2,10 @@
 //!
 //! This implementation collects evaluated names/indices from `properties`,
 //! `patternProperties`, `additionalProperties`, `prefixItems`, and `items`
-//! at the current schema level.
+//! at the current schema level, as well as property names declared in
+//! `allOf`, `anyOf`, and `oneOf` sub-schema `properties` objects.
+
+use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 
@@ -55,7 +58,37 @@ fn is_property_evaluated(
     if has_additional {
         return true;
     }
-    crate::applicator::matches_any_pattern_property(obj, key, ctx)
+    if crate::applicator::matches_any_pattern_property(obj, key, ctx) {
+        return true;
+    }
+    // Check property names declared in allOf/anyOf/oneOf branches.
+    // A property listed in any branch's `properties` keyword is considered
+    // evaluated by that applicator at this schema level.
+    applicator_branch_evaluated_properties(obj).contains(key)
+}
+
+/// Collect property names from the `properties` of every branch inside
+/// `allOf`, `anyOf`, and `oneOf`.  These properties are considered evaluated
+/// by the applicator and must not be rejected by `unevaluatedProperties`.
+fn applicator_branch_evaluated_properties<'a>(obj: &'a Map<String, Value>) -> HashSet<&'a str> {
+    let mut evaluated: HashSet<&'a str> = HashSet::new();
+    for applicator_key in &["allOf", "anyOf", "oneOf"] {
+        let Some(Value::Array(branches)) = obj.get(*applicator_key) else {
+            continue;
+        };
+        for branch in branches {
+            let Value::Object(branch_obj) = branch else {
+                continue;
+            };
+            let Some(Value::Object(props)) = branch_obj.get("properties") else {
+                continue;
+            };
+            for key in props.keys() {
+                evaluated.insert(key.as_str());
+            }
+        }
+    }
+    evaluated
 }
 
 fn apply_unevaluated_items(
@@ -148,5 +181,33 @@ mod tests {
             "unevaluatedItems": false
         });
         assert!(valid(&s, &json!(["hello", 1, 2])));
+    }
+
+    #[test]
+    fn unevaluated_properties_allof_branch_properties_are_evaluated() {
+        // A property declared in an allOf branch's `properties` must be treated
+        // as evaluated and NOT rejected by unevaluatedProperties.
+        let s = json!({
+            "allOf": [{"properties": {"a": true}}],
+            "unevaluatedProperties": false
+        });
+        assert!(
+            valid(&s, &json!({"a": 1})),
+            "property covered by allOf branch must not be rejected"
+        );
+        assert!(
+            !valid(&s, &json!({"a": 1, "b": 2})),
+            "property not covered by any branch must still be rejected"
+        );
+    }
+
+    #[test]
+    fn unevaluated_properties_anyof_branch_properties_are_evaluated() {
+        let s = json!({
+            "anyOf": [{"properties": {"x": {"type": "string"}}}],
+            "unevaluatedProperties": false
+        });
+        assert!(valid(&s, &json!({"x": "hello"})));
+        assert!(!valid(&s, &json!({"x": "hello", "y": 1})));
     }
 }

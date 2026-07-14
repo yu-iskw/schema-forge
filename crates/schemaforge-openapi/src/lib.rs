@@ -388,8 +388,23 @@ fn adapt_oas30_schema(schema: &Value) -> Value {
         .unwrap_or(false)
     {
         new_obj.remove("nullable");
-        let type_val = new_obj.get("type").cloned().unwrap_or(Value::Null);
-        new_obj.insert("type".to_owned(), make_nullable_type(type_val));
+
+        if let Some(Value::Array(enum_vals)) = new_obj.get_mut("enum") {
+            // enum present: add null to the allowed values so the schema accepts null.
+            if !enum_vals.contains(&Value::Null) {
+                enum_vals.push(Value::Null);
+            }
+        } else if let Some(const_val) = new_obj.remove("const") {
+            // const present: convert to enum [const_val, null] so null is permitted.
+            new_obj.insert(
+                "enum".to_owned(),
+                serde_json::json!([const_val, Value::Null]),
+            );
+        } else {
+            // No enum/const: widen the type to include null.
+            let type_val = new_obj.get("type").cloned().unwrap_or(Value::Null);
+            new_obj.insert("type".to_owned(), make_nullable_type(type_val));
+        }
     }
 
     // Rewrite OAS 3.0 boolean exclusiveMinimum/Maximum to Draft 2020-12 style.
@@ -617,6 +632,50 @@ mod tests {
         );
         // Non-nullable sibling must be untouched.
         assert_eq!(adapted["properties"]["count"]["type"], json!("integer"));
+    }
+
+    #[test]
+    fn adapt_oas30_nullable_with_enum_adds_null_to_enum() {
+        // nullable: true + enum must add null to the enum array, not touch type.
+        let schema = json!({"enum": ["foo", "bar"], "nullable": true});
+        let adapted = adapt_oas30_schema(&schema);
+        let vals = adapted["enum"].as_array().unwrap();
+        assert!(vals.contains(&json!("foo")));
+        assert!(vals.contains(&json!("bar")));
+        assert!(vals.contains(&Value::Null), "null must be in enum");
+        assert!(adapted.get("nullable").is_none());
+        // type should NOT be present (only enum controls valid values).
+        assert!(adapted.get("type").is_none());
+    }
+
+    #[test]
+    fn adapt_oas30_nullable_with_enum_does_not_duplicate_null() {
+        // If null is already in the enum, it must not be duplicated.
+        let schema = json!({"enum": ["foo", null], "nullable": true});
+        let adapted = adapt_oas30_schema(&schema);
+        let vals = adapted["enum"].as_array().unwrap();
+        let null_count = vals.iter().filter(|v| v.is_null()).count();
+        assert_eq!(null_count, 1, "null must appear exactly once in enum");
+    }
+
+    #[test]
+    fn adapt_oas30_nullable_with_const_converts_to_enum() {
+        // nullable: true + const must become enum [const_val, null].
+        let schema = json!({"const": "active", "nullable": true});
+        let adapted = adapt_oas30_schema(&schema);
+        assert!(adapted.get("const").is_none(), "const must be removed");
+        let vals = adapted["enum"].as_array().unwrap();
+        assert!(vals.contains(&json!("active")));
+        assert!(vals.contains(&Value::Null));
+    }
+
+    #[test]
+    fn adapt_oas30_nullable_with_const_integer() {
+        let schema = json!({"const": 42, "nullable": true});
+        let adapted = adapt_oas30_schema(&schema);
+        let vals = adapted["enum"].as_array().unwrap();
+        assert!(vals.contains(&json!(42)));
+        assert!(vals.contains(&Value::Null));
     }
 
     #[test]
