@@ -65,14 +65,21 @@ impl Default for FileResolver {
 
 impl Resolver for FileResolver {
     fn resolve(&self, base: &str, reference: &str) -> Result<Value, ResolveError> {
-        // Offline registry applies fragments itself; prefer it when present.
-        if let Ok(v) = self.offline.resolve(base, reference) {
-            return Ok(v);
-        }
         let resolved = uri::resolve_uri(base, reference);
         // Strip any fragment before opening the file so the OS sees a plain
         // path, then apply the fragment to the loaded document.
         let (path_uri, fragment) = uri::split_uri_fragment(&resolved);
+
+        // If the base document (fragment-stripped URI) is registered in the
+        // offline registry, the offline resolver is authoritative — return its
+        // result including any error (e.g. NotFound for a missing anchor).
+        // Only fall through to disk when the document itself is absent from
+        // the registry.
+        let doc_key = uri::normalize_uri(path_uri.to_owned());
+        if self.offline.schemas.contains_key(&doc_key) {
+            return self.offline.resolve(base, reference);
+        }
+
         let doc = load_from_path(path_uri, self.base_dir.as_deref(), self.max_bytes)?;
         crate::fragment::apply(doc, fragment, &resolved)
     }
@@ -626,5 +633,35 @@ mod tests {
         );
         let result = r.resolve("", "urn:offline#/$defs/N");
         assert_eq!(result.unwrap(), serde_json::json!({ "type": "number" }));
+    }
+
+    /// Register a URI in offline (without a particular anchor), have a disk
+    /// file at that same URI path that *does* contain the anchor.  Resolving
+    /// the URI with the anchor fragment must return NotFound from the offline
+    /// registry — it must NOT fall through and load the disk file.
+    #[test]
+    fn file_resolver_offline_authority_blocks_disk_fallthrough_on_not_found() {
+        let dir = std::env::temp_dir().join("sf_offline_authority_test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Write a disk file that has the anchor.
+        let disk_content = r#"{"$anchor":"diskAnchor","type":"integer"}"#;
+        let file_path = dir.join("schema.json");
+        std::fs::write(&file_path, disk_content).unwrap();
+        let file_uri = format!("file://{}", file_path.display());
+
+        // Register the same URI in offline WITHOUT the anchor.
+        let mut r = FileResolver::with_base_dir(&dir);
+        r.register(&file_uri, serde_json::json!({"type": "string"}));
+
+        // Resolving with the anchor fragment should NotFound (offline is
+        // authoritative), not silently load the disk file and find the anchor.
+        let result = r.resolve("", &format!("{file_uri}#diskAnchor"));
+        assert!(
+            matches!(result, Err(ResolveError::NotFound(_))),
+            "offline-registered doc must NotFound for unknown anchor, not fall through to disk: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

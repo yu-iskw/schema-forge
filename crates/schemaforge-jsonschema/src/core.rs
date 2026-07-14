@@ -87,11 +87,10 @@ pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Opt
 }
 
 fn build_registry_key(ref_uri: &str, base_uri: &str) -> String {
-    if schemaforge_resolver::is_absolute_uri(ref_uri) {
-        ref_uri.to_owned()
-    } else {
-        format!("{base_uri}{ref_uri}")
-    }
+    let resolved = schemaforge_resolver::resolve_uri(base_uri, ref_uri);
+    schemaforge_resolver::split_uri_fragment(&resolved)
+        .0
+        .to_owned()
 }
 
 // ── JSON Pointer resolution ───────────────────────────────────────────────────
@@ -283,6 +282,53 @@ mod tests {
     fn pointer_tilde_unescape() {
         let root = json!({"a/b": {"c~d": 1}});
         assert_eq!(resolve_json_pointer(&root, "/a~1b/c~0d"), Some(&json!(1)));
+    }
+
+    // ── build_registry_key relative URI resolution ────────────────────────────
+
+    #[test]
+    fn build_registry_key_relative_ref_resolves_against_base() {
+        // Relative "b.json" with base "https://example.com/schemas/a.json"
+        // must yield "https://example.com/schemas/b.json", not a naive concat.
+        let key = build_registry_key("b.json", "https://example.com/schemas/a.json");
+        assert_eq!(
+            key, "https://example.com/schemas/b.json",
+            "relative ref must be resolved against the base URI directory"
+        );
+    }
+
+    #[test]
+    fn build_registry_key_absolute_ref_passthrough() {
+        let key = build_registry_key(
+            "https://other.com/schema.json",
+            "https://example.com/schemas/a.json",
+        );
+        assert_eq!(key, "https://other.com/schema.json");
+    }
+
+    #[test]
+    fn relative_ref_resolves_via_validator_registry() {
+        // End-to-end: $ref with a relative URI must resolve to the correct
+        // registered schema key after resolve_uri is applied.
+        let root = json!({"$ref": "b.json"});
+        let opts = Opts {
+            base_uri: "https://example.com/schemas/a.json".to_owned(),
+            ..Default::default()
+        };
+        let mut v = Validator::new(&root, opts).unwrap();
+        v.add_schema(
+            "https://example.com/schemas/b.json",
+            json!({"type": "integer"}),
+        )
+        .unwrap();
+        assert!(
+            v.validate(&json!(42)).is_valid(),
+            "relative $ref b.json must resolve to the registered b.json schema"
+        );
+        assert!(
+            !v.validate(&json!("not-int")).is_valid(),
+            "schema constraints from b.json must apply"
+        );
     }
 
     // ── base_uri self-ref (fix #2) ─────────────────────────────────────────
