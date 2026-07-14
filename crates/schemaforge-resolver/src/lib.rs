@@ -9,6 +9,7 @@
 //! resolved external URI so that builds remain reproducible.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -401,10 +402,38 @@ impl LockFile {
 
 fn load_from_path(uri: &str, base_dir: Option<&Path>) -> Result<Value, ResolveError> {
     let path = uri_to_jailed_path(uri, base_dir)?;
-    let text = std::fs::read_to_string(&path).map_err(|e| ResolveError::IoError {
+
+    // Open the file first to obtain a stable file descriptor before reading.
+    // This narrows the TOCTOU window: a symlink created between the initial
+    // jail check and open will be resolved by the OS at open time, and then
+    // caught by the re-canonicalize check below before any bytes are read.
+    let mut file = std::fs::File::open(&path).map_err(|e| ResolveError::IoError {
         uri: uri.to_owned(),
         reason: e.to_string(),
     })?;
+
+    // Re-canonicalize the path now that the file is open and re-verify the
+    // jail.  Any symlink that was swapped in after uri_to_jailed_path but
+    // before File::open will be caught here.
+    if let Some(base) = base_dir
+        && let Ok(canonical) = std::fs::canonicalize(&path)
+    {
+        let canonical_base =
+            std::fs::canonicalize(base).unwrap_or_else(|_| lexically_normalize(base));
+        if !canonical.starts_with(&canonical_base) {
+            return Err(ResolveError::PathEscaped {
+                path: canonical.display().to_string(),
+            });
+        }
+    }
+
+    let mut text = String::new();
+    file.read_to_string(&mut text)
+        .map_err(|e| ResolveError::IoError {
+            uri: uri.to_owned(),
+            reason: e.to_string(),
+        })?;
+
     serde_json::from_str(&text).map_err(|e| ResolveError::ParseError {
         uri: uri.to_owned(),
         reason: e.to_string(),
@@ -838,6 +867,39 @@ mod tests {
         );
 
         // Cleanup
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir(&jail);
+        let _ = std::fs::remove_dir(&tmp);
+    }
+
+    /// Verify that the post-open re-canonicalize check catches a symlink that
+    /// points outside the jail.  This mirrors the TOCTOU window: the symlink
+    /// already exists when resolve is called (simulating a race where it was
+    /// created between the initial path check and File::open).
+    #[cfg(unix)]
+    #[test]
+    fn file_resolver_post_open_recheck_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = std::env::temp_dir().join("schemaforge_toctou_recheck_test");
+        let jail = tmp.join("jail");
+        let outside = tmp.join("outside.json");
+        std::fs::create_dir_all(&jail).unwrap();
+        std::fs::write(&outside, r#"{"type":"integer"}"#).unwrap();
+
+        let link = jail.join("link.json");
+        let _ = std::fs::remove_file(&link);
+        symlink(&outside, &link).unwrap();
+
+        let r = FileResolver::with_base_dir(&jail);
+        let uri = format!("file://{}", link.display());
+        let result = r.resolve("", &uri);
+        assert!(
+            matches!(result, Err(ResolveError::PathEscaped { .. })),
+            "expected PathEscaped after post-open re-check, got {result:?}"
+        );
+
         let _ = std::fs::remove_file(&link);
         let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir(&jail);

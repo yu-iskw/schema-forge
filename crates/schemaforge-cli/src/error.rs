@@ -64,6 +64,9 @@ pub fn from_compile(e: CompileError) -> CliError {
         CompileError::CyclicRef { uri } => {
             CliError::Resolver(format!("cyclic $ref detected: `{uri}`"))
         }
+        CompileError::DepthExceeded { depth } => CliError::Resolver(format!(
+            "$ref resolution exceeded maximum depth of {depth} levels"
+        )),
         CompileError::InvalidSchemaKind { kind } => CliError::Parse(format!(
             "invalid schema: must be a boolean or object, got `{kind}`"
         )),
