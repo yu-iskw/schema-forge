@@ -58,7 +58,7 @@ fn instance_matches_type(instance: &Value, t: &str) -> bool {
         "string" => instance.is_string(),
         "array" => instance.is_array(),
         "object" => instance.is_object(),
-        _ => true,
+        _ => false,
     }
 }
 
@@ -400,6 +400,76 @@ fn apply_dependent_required(
                     format!("property `{key}` is required when `{prop}` is present"),
                 )));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{ValidationOptions, Validator};
+    use serde_json::json;
+
+    fn valid(schema: &serde_json::Value, instance: &serde_json::Value) -> bool {
+        Validator::new(schema, ValidationOptions::default())
+            .unwrap()
+            .validate(instance)
+            .is_valid()
+    }
+
+    #[test]
+    fn unknown_type_string_rejects_all_instances() {
+        // An unrecognised `type` value must fail-closed: no instance should
+        // satisfy the constraint, because the type name is not in the known
+        // set and we cannot claim any instance matches an unknown type.
+        let schema = json!({"type": "notatype"});
+        assert!(
+            !valid(&schema, &json!("hello")),
+            "string should not satisfy unknown type `notatype`"
+        );
+        assert!(
+            !valid(&schema, &json!(42)),
+            "integer should not satisfy unknown type `notatype`"
+        );
+        assert!(
+            !valid(&schema, &json!(null)),
+            "null should not satisfy unknown type `notatype`"
+        );
+        assert!(
+            !valid(&schema, &json!({})),
+            "object should not satisfy unknown type `notatype`"
+        );
+    }
+
+    #[test]
+    fn unknown_type_in_array_is_ignored_but_known_types_still_match() {
+        // When `type` is an array, only instances that match at least one
+        // recognised type should pass.  An unknown entry must not make the
+        // constraint accept everything.
+        let schema = json!({"type": ["string", "notatype"]});
+        assert!(valid(&schema, &json!("hello")), "string should match");
+        assert!(
+            !valid(&schema, &json!(42)),
+            "integer must not satisfy [string, notatype]"
+        );
+    }
+
+    #[test]
+    fn known_types_still_validate_correctly() {
+        for (type_str, good, bad) in [
+            ("null", json!(null), json!("x")),
+            ("boolean", json!(true), json!(1)),
+            ("integer", json!(1), json!(1.5)),
+            ("number", json!(1.5), json!("x")),
+            ("string", json!("x"), json!(1)),
+            ("array", json!([]), json!({})),
+            ("object", json!({}), json!([])),
+        ] {
+            let schema = json!({"type": type_str});
+            assert!(
+                valid(&schema, &good),
+                "type={type_str} should accept {good}"
+            );
+            assert!(!valid(&schema, &bad), "type={type_str} should reject {bad}");
         }
     }
 }

@@ -176,13 +176,33 @@ pub struct ObjectConstraints {
     pub max_properties: Option<u64>,
 }
 
+/// Lightweight scalar metadata extracted from a property's compiled schema.
+///
+/// Avoids deep-cloning the full [`SchemaNode`] sub-tree (properties, defs,
+/// combinators, etc.) while still giving advanced consumers the type,
+/// annotation, and nullability information they need most.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SchemaMetadata {
+    /// Accepted JSON types in stable JSON Schema order.
+    pub types: Vec<String>,
+    /// Optional schema title.
+    pub title: Option<String>,
+    /// Optional schema description.
+    pub description: Option<String>,
+    /// Optional string `format` annotation.
+    pub format: Option<String>,
+    /// Whether the schema explicitly allows `null`.
+    pub nullable: bool,
+}
+
 /// Stable, language-neutral metadata for one JSON object property.
 ///
 /// This is the public introspection shape used by Rust and language bindings.
 /// It deliberately describes the schema attribute rather than an instance
 /// value. Nested object properties are recursively represented by
-/// [`Self::attributes`]. The complete compiled child schema remains available
-/// in [`Self::schema`] for advanced consumers.
+/// [`Self::attributes`]. Lightweight compiled-schema metadata is available in
+/// [`Self::schema`]; use the parent [`SchemaNode`] directly when the full
+/// sub-tree is needed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObjectAttribute {
     /// JSON property name exactly as declared by the schema.
@@ -199,8 +219,8 @@ pub struct ObjectAttribute {
     pub format: Option<String>,
     /// Nested attributes when this property is itself an object schema.
     pub attributes: Vec<ObjectAttribute>,
-    /// Complete compiled schema for the property.
-    pub schema: SchemaNode,
+    /// Lightweight schema metadata for the property (no deep sub-tree clone).
+    pub schema: SchemaMetadata,
 }
 
 /// A compiled schema node in the IR.
@@ -289,20 +309,29 @@ impl SchemaNode {
     pub fn object_attributes(&self) -> Vec<ObjectAttribute> {
         self.properties
             .iter()
-            .map(|(name, schema)| ObjectAttribute {
-                name: name.clone(),
-                required: self.object.required.contains(name),
-                types: schema
+            .map(|(name, child)| {
+                let types: Vec<String> = child
                     .types
                     .type_names()
                     .into_iter()
                     .map(str::to_owned)
-                    .collect(),
-                title: schema.title.clone(),
-                description: schema.description.clone(),
-                format: schema.string.format.clone(),
-                attributes: schema.object_attributes(),
-                schema: schema.clone(),
+                    .collect();
+                ObjectAttribute {
+                    name: name.clone(),
+                    required: self.object.required.contains(name),
+                    types: types.clone(),
+                    title: child.title.clone(),
+                    description: child.description.clone(),
+                    format: child.string.format.clone(),
+                    attributes: child.object_attributes(),
+                    schema: SchemaMetadata {
+                        types,
+                        title: child.title.clone(),
+                        description: child.description.clone(),
+                        format: child.string.format.clone(),
+                        nullable: child.types.null,
+                    },
+                }
             })
             .collect()
     }

@@ -78,3 +78,6 @@ cast_possible_truncation = "allow"
 struct_excessive_bools = "allow"
 redundant_pub_crate = "allow"
 doc_markdown = "allow"
+# ObjectAttribute and SchemaNode transitively contain f64 (NumericBound) which
+# cannot implement Eq, so the lint suggestion to add Eq is not applicable here.
+derive_partial_eq_without_eq = "allow"

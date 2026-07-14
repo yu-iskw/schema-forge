@@ -29,10 +29,7 @@ pub enum CliError {
     /// Exit 1 — validation produced errors.
     #[error("validation failed")]
     ValidationFailed,
-    /// Exit 2 — unsupported feature or dialect.
-    #[error("unsupported: {0}")]
-    Unsupported(String),
-    /// Exit 3 — `$ref` resolver failure.
+    /// Exit 2 — `$ref` resolver failure.
     #[error("resolver error: {0}")]
     Resolver(String),
     /// Exit 4 — code generation failure.
@@ -64,8 +61,8 @@ pub fn from_compile(e: CompileError) -> CliError {
         CompileError::UnresolvedRef { uri, reason } => {
             CliError::Resolver(format!("unresolved ref `{uri}`: {reason}"))
         }
-        CompileError::UnsupportedDialect(s) => {
-            CliError::Unsupported(format!("unsupported dialect: {s}"))
+        CompileError::CyclicRef { uri } => {
+            CliError::Resolver(format!("cyclic $ref detected: `{uri}`"))
         }
     }
 }
@@ -75,11 +72,10 @@ pub fn from_compile(e: CompileError) -> CliError {
 pub fn to_exit_code(e: &CliError) -> ExitCode {
     let code: u8 = match e {
         CliError::Parse(_) | CliError::ValidationFailed => 1,
-        CliError::Unsupported(_) => 2,
-        CliError::Resolver(_) => 3,
-        CliError::Codegen(_) => 4,
-        CliError::Schema(_) => 5,
-        CliError::Io(_) | CliError::Json(_) | CliError::OpenApi(_) | CliError::Internal(_) => 6,
+        CliError::Resolver(_) => 2,
+        CliError::Codegen(_) => 3,
+        CliError::Schema(_) => 4,
+        CliError::Io(_) | CliError::Json(_) | CliError::OpenApi(_) | CliError::Internal(_) => 5,
     };
     ExitCode::from(code)
 }

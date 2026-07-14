@@ -35,8 +35,17 @@ fn count_nodes(node: &SchemaNode) -> usize {
     for prop in node.properties.values() {
         n += count_nodes(prop);
     }
+    if let Some(ap) = &node.additional_properties {
+        n += count_nodes(ap);
+    }
     if let Some(items) = &node.items {
         n += count_nodes(items);
+    }
+    for pi in &node.prefix_items {
+        n += count_nodes(pi);
+    }
+    if let Some(not) = &node.not {
+        n += count_nodes(not);
     }
     for sub in node.all_of.iter().chain(&node.any_of).chain(&node.one_of) {
         n += count_nodes(sub);
@@ -113,5 +122,60 @@ mod tests {
         let r = inspect_ir(&ir);
         assert_eq!(r.node_count, 2);
         assert!(r.capabilities.contains(&"object".to_owned()));
+    }
+
+    #[test]
+    fn count_nodes_includes_additional_properties() {
+        let node = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            additional_properties: Some(Box::new(SchemaNode {
+                types: TypeSet::from_json(&serde_json::json!("string")),
+                ..SchemaNode::default()
+            })),
+            ..SchemaNode::default()
+        };
+        let ir = crate::make_test_ir(node);
+        let r = inspect_ir(&ir);
+        // root + additional_properties schema
+        assert_eq!(r.node_count, 2);
+    }
+
+    #[test]
+    fn count_nodes_includes_prefix_items() {
+        let node = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("array")),
+            prefix_items: vec![
+                SchemaNode {
+                    types: TypeSet::from_json(&serde_json::json!("string")),
+                    ..SchemaNode::default()
+                },
+                SchemaNode {
+                    types: TypeSet::from_json(&serde_json::json!("integer")),
+                    ..SchemaNode::default()
+                },
+            ],
+            ..SchemaNode::default()
+        };
+        let ir = crate::make_test_ir(node);
+        let r = inspect_ir(&ir);
+        // root + 2 prefix_items
+        assert_eq!(r.node_count, 3);
+    }
+
+    #[test]
+    fn count_nodes_includes_not() {
+        let node = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            not: Some(Box::new(SchemaNode {
+                types: TypeSet::from_json(&serde_json::json!("integer")),
+                ..SchemaNode::default()
+            })),
+            ..SchemaNode::default()
+        };
+        let ir = crate::make_test_ir(node);
+        let r = inspect_ir(&ir);
+        // root + not sub-schema
+        assert_eq!(r.node_count, 2);
+        assert!(r.capabilities.contains(&"not".to_owned()));
     }
 }

@@ -414,19 +414,26 @@ fn load_from_path(uri: &str, base_dir: Option<&Path>) -> Result<Value, ResolveEr
 /// Resolve a URI to a filesystem path, enforcing a base-directory jail.
 ///
 /// Rules:
-/// - `file://` URIs are accepted only when the resolved path stays inside
-///   `base_dir` (when `base_dir` is `Some`).  With no `base_dir` the path is
-///   returned as-is.
+/// - `file://` URIs with an absolute path require `base_dir`; without one
+///   they are rejected with [`ResolveError::NotFound`] to prevent unconfined
+///   filesystem access.
 /// - Relative URIs are joined with `base_dir`; if `base_dir` is `None` the
 ///   URI cannot be resolved and [`ResolveError::NotFound`] is returned.
-/// - After joining, the path is lexically normalised (`.` and `..` are
-///   collapsed) and the result must have `base_dir` as a prefix.  Any path
-///   that escapes the jail is rejected with [`ResolveError::PathEscaped`].
+/// - The resolved path is canonicalized via [`std::fs::canonicalize`] when the
+///   file exists (which resolves symlinks and removes `..` components).  When
+///   the file does not yet exist the path is lexically normalised instead.
+/// - After normalisation the result must have the canonical (or lexical)
+///   `base_dir` as a prefix.  Any path that escapes the jail — including via
+///   symlinks — is rejected with [`ResolveError::PathEscaped`].
 fn uri_to_jailed_path(
     uri: &str,
     base_dir: Option<&Path>,
 ) -> Result<std::path::PathBuf, ResolveError> {
     let raw_path: std::path::PathBuf = if let Some(file_path) = uri.strip_prefix("file://") {
+        // Absolute file:// URIs require a jail; refuse unconfined access.
+        if base_dir.is_none() {
+            return Err(ResolveError::NotFound(uri.to_owned()));
+        }
         std::path::PathBuf::from(file_path)
     } else {
         let base = base_dir.ok_or_else(|| ResolveError::NotFound(uri.to_owned()))?;
@@ -434,11 +441,21 @@ fn uri_to_jailed_path(
         base.join(relative)
     };
 
-    let normalized = lexically_normalize(&raw_path);
+    // Prefer canonical resolution (resolves symlinks) when the path exists;
+    // fall back to lexical normalisation for paths that do not yet exist.
+    let normalized = if raw_path.exists() {
+        std::fs::canonicalize(&raw_path).unwrap_or_else(|_| lexically_normalize(&raw_path))
+    } else {
+        lexically_normalize(&raw_path)
+    };
 
     // Enforce jail when a base directory is configured.
     if let Some(base) = base_dir {
-        let normalized_base = lexically_normalize(base);
+        let normalized_base = if base.exists() {
+            std::fs::canonicalize(base).unwrap_or_else(|_| lexically_normalize(base))
+        } else {
+            lexically_normalize(base)
+        };
         if !normalized.starts_with(&normalized_base) {
             return Err(ResolveError::PathEscaped {
                 path: normalized.display().to_string(),
@@ -783,6 +800,48 @@ mod tests {
             matches!(err, ResolveError::PathEscaped { .. }),
             "expected PathEscaped, got {err:?}"
         );
+    }
+
+    #[test]
+    fn file_resolver_no_base_dir_rejects_absolute_file_uri() {
+        // Without a base_dir, absolute file:// URIs must be refused.
+        let r = FileResolver::default();
+        let err = r.resolve("", "file:///etc/passwd").unwrap_err();
+        assert!(
+            matches!(err, ResolveError::NotFound(_)),
+            "expected NotFound without base_dir, got {err:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_resolver_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = std::env::temp_dir().join("schemaforge_symlink_test");
+        let jail = tmp.join("jail");
+        let outside = tmp.join("outside_schema.json");
+        std::fs::create_dir_all(&jail).unwrap();
+        std::fs::write(&outside, r#"{"type":"string"}"#).unwrap();
+
+        let link = jail.join("escape.json");
+        // Recreate symlink (ignore error if it already exists from a prior run).
+        let _ = std::fs::remove_file(&link);
+        symlink(&outside, &link).unwrap();
+
+        let r = FileResolver::with_base_dir(&jail);
+        let uri = format!("file://{}", link.display());
+        let result = r.resolve("", &uri);
+        assert!(
+            matches!(result, Err(ResolveError::PathEscaped { .. })),
+            "expected PathEscaped for symlink escape, got {result:?}"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir(&jail);
+        let _ = std::fs::remove_dir(&tmp);
     }
 
     #[test]

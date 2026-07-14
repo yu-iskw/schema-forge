@@ -22,12 +22,11 @@ pub use lock::{LockEntry, format_lock_toml};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
-use schemaforge_dialect::{Dialect, detect};
+use schemaforge_dialect::detect;
 use schemaforge_ir::{
     ArrayConstraints, NumericBound, NumericConstraints, ObjectConstraints, SchemaIr, SchemaNode,
     StringConstraints, TypeSet,
 };
-use schemaforge_resolver::{OfflineResolver, Resolver};
 use schemaforge_source::SourceMap;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -54,43 +53,39 @@ pub enum CompileError {
         /// Human-readable reason the ref could not be lowered.
         reason: String,
     },
-    /// The dialect is not supported.
-    #[error("unsupported dialect: {0}")]
-    UnsupportedDialect(String),
+    /// A `$ref` introduces a reference cycle.
+    ///
+    /// The same local fragment ref (`#/…` or `#`) appeared recursively in its
+    /// own lowering call stack.  Silently accepting a cycle would produce an
+    /// unbounded schema that cannot be represented in the IR; the compiler
+    /// therefore rejects the schema.
+    #[error("cyclic $ref detected: `{uri}` is referenced within its own definition")]
+    CyclicRef {
+        /// The URI that forms the cycle.
+        uri: String,
+    },
 }
 
 /// Options that control the compiler's behaviour.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CompilerOptions {
-    /// Default dialect when `$schema` is absent.
-    pub default_dialect: Dialect,
-    /// Base URI for relative `$id` resolution.
+    /// Base URI used when the schema document URI is empty or absent.
+    ///
+    /// When a non-empty `base_uri` is set, it is substituted as the document
+    /// URI during compilation and source-map registration for any call where
+    /// the caller passes an empty string.
     pub base_uri: String,
-    /// Pre-loaded schemas for offline `$ref` resolution.
-    pub preloaded_schemas: Vec<(String, Value)>,
-}
-
-impl Default for CompilerOptions {
-    fn default() -> Self {
-        Self {
-            default_dialect: Dialect::Draft202012,
-            base_uri: String::new(),
-            preloaded_schemas: Vec::new(),
-        }
-    }
 }
 
 /// The Schemaforge compiler: transforms source text into an IR.
 pub struct Compiler {
-    // Retained for future external-$ref resolution; currently unused while
-    // only local fragment refs (#/…) are lowered.
-    #[allow(dead_code)]
-    resolver: Arc<dyn Resolver>,
     source_map: SourceMap,
+    /// Fallback document URI (from [`CompilerOptions::base_uri`]).
+    base_uri: String,
 }
 
 impl Compiler {
-    /// Create a new compiler with default options and offline resolver.
+    /// Create a new compiler with default options.
     #[must_use]
     pub fn new() -> Self {
         Self::with_options(&CompilerOptions::default())
@@ -99,57 +94,58 @@ impl Compiler {
     /// Create a new compiler with custom options.
     #[must_use]
     pub fn with_options(options: &CompilerOptions) -> Self {
-        let mut resolver = OfflineResolver::new();
-        for (uri, schema) in &options.preloaded_schemas {
-            resolver.register(uri.clone(), schema.clone());
-        }
         Self {
-            resolver: Arc::new(resolver),
             source_map: SourceMap::new(),
+            base_uri: options.base_uri.clone(),
         }
     }
 
     /// Compile a JSON Schema from a JSON string.
+    ///
+    /// `uri` identifies the document; when empty, [`CompilerOptions::base_uri`]
+    /// is used as a fallback.
     ///
     /// # Errors
     ///
     /// Returns [`CompileError`] when the source is invalid or a `$ref` cannot
     /// be resolved.
     pub fn compile_json(&mut self, uri: &str, source: &str) -> Result<SchemaIr, CompileError> {
+        let effective_uri = self.resolve_uri(uri);
         let value: Value =
             serde_json::from_str(source).map_err(|e| CompileError::JsonParse(e.to_string()))?;
         let digest = sha256_hex(source.as_bytes());
-        self.source_map.add(uri, Arc::from(source));
-        self.compile_value(uri, &value, &digest)
+        self.source_map.add(&effective_uri, Arc::from(source));
+        compile_value(&effective_uri, &value, &digest)
     }
 
     /// Compile a JSON Schema from a YAML string.
+    ///
+    /// `uri` identifies the document; when empty, [`CompilerOptions::base_uri`]
+    /// is used as a fallback.
     ///
     /// # Errors
     ///
     /// Returns [`CompileError`] when the source is invalid or a `$ref` cannot
     /// be resolved.
     pub fn compile_yaml(&mut self, uri: &str, source: &str) -> Result<SchemaIr, CompileError> {
+        let effective_uri = self.resolve_uri(uri);
         let value: Value =
             serde_saphyr::from_str(source).map_err(|e| CompileError::YamlParse(e.to_string()))?;
         let digest = sha256_hex(source.as_bytes());
-        self.source_map.add(uri, Arc::from(source));
-        self.compile_value(uri, &value, &digest)
+        self.source_map.add(&effective_uri, Arc::from(source));
+        compile_value(&effective_uri, &value, &digest)
     }
 
-    // `self` is intentionally kept here so this method can be reconnected to
-    // `self.resolver` when external $ref resolution is added back.
-    #[allow(clippy::unused_self)]
-    fn compile_value(
-        &self,
-        uri: &str,
-        value: &Value,
-        digest: &str,
-    ) -> Result<SchemaIr, CompileError> {
-        let dialect = detect(value);
-        let mut ctx = LowerCtx::new(value);
-        let root = lower_schema(value, &mut ctx)?;
-        Ok(SchemaIr::new(root, dialect.uri(), digest, uri))
+    /// Return `uri` when non-empty, otherwise fall back to `self.base_uri`.
+    ///
+    /// Returns an owned `String` to avoid holding a borrow on `self` across
+    /// the mutable `source_map.add` call.
+    fn resolve_uri(&self, uri: &str) -> String {
+        if uri.is_empty() {
+            self.base_uri.clone()
+        } else {
+            uri.to_owned()
+        }
     }
 
     /// Access the source map populated during compilation.
@@ -163,6 +159,13 @@ impl Default for Compiler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn compile_value(uri: &str, value: &Value, digest: &str) -> Result<SchemaIr, CompileError> {
+    let dialect = detect(value);
+    let mut ctx = LowerCtx::new(value);
+    let root = lower_schema(value, &mut ctx)?;
+    Ok(SchemaIr::new(root, dialect.uri(), digest, uri))
 }
 
 /// Context threaded through schema lowering; carries the root document for
@@ -195,12 +198,14 @@ fn lower_schema(value: &Value, ctx: &mut LowerCtx<'_>) -> Result<SchemaNode, Com
 
 /// Resolve a local fragment `$ref` (e.g. `#`, `#/$defs/Foo`) into an IR node.
 ///
-/// If the same ref appears in the current call stack (cycle), an open `any`
-/// schema is returned to break the recursion without losing compilation.
+/// Returns [`CompileError::CyclicRef`] when the same ref appears in the
+/// current call stack, because a recursive schema cannot be faithfully
+/// lowered to a finite IR.
 fn lower_local_ref(ref_str: &str, ctx: &mut LowerCtx<'_>) -> Result<SchemaNode, CompileError> {
     if ctx.visiting.iter().any(|v| v == ref_str) {
-        // Cycle detected – return an open schema to stop infinite recursion.
-        return Ok(SchemaNode::any());
+        return Err(CompileError::CyclicRef {
+            uri: ref_str.to_owned(),
+        });
     }
     // Clone the target so that `ctx` is free to be mutably borrowed during
     // the recursive lowering call (the root document is small-ish in practice).
@@ -533,14 +538,34 @@ mod tests {
     }
 
     #[test]
-    fn compile_root_ref() {
+    fn compile_root_ref_cycle_is_error() {
         let mut c = Compiler::new();
-        // Schema that references its own root (infinite in theory, but we
-        // lower lazily and detect cycles).
+        // A `$defs` entry that `$ref`s back to the document root creates an
+        // unbounded recursive schema.  The compiler must reject it with a
+        // `CyclicRef` error rather than silently returning an open schema.
         let src = r##"{"$defs": {"Self": {"$ref": "#"}}}"##;
-        let ir = c.compile_json("test://root-ref.json", src).unwrap();
-        // The $defs/Self ref points back to the root; cycle detection produces
-        // an open (any) schema for the recursive position.
-        assert!(ir.root.defs.contains_key("Self"));
+        let result = c.compile_json("test://root-ref.json", src);
+        assert!(
+            matches!(result, Err(CompileError::CyclicRef { .. })),
+            "expected CyclicRef error but got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn compile_non_cyclic_ref_succeeds() {
+        let mut c = Compiler::new();
+        // A ref that points to a definition that does not refer back should
+        // still compile successfully.
+        let src = r##"{
+            "type": "object",
+            "properties": {
+                "name": {"$ref": "#/$defs/StringField"}
+            },
+            "$defs": {
+                "StringField": {"type": "string"}
+            }
+        }"##;
+        let ir = c.compile_json("test://non-cyclic.json", src).unwrap();
+        assert!(ir.root.properties.contains_key("name"));
     }
 }

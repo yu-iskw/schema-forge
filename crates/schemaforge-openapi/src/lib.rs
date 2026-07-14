@@ -10,6 +10,7 @@
 //! document because the conversion is lossy.
 
 use indexmap::IndexMap;
+use schemaforge_diagnostics::Diagnostic;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -29,14 +30,6 @@ pub enum OpenApiError {
     /// A required field is missing from the document.
     #[error("missing required field `{0}` in OpenAPI document")]
     MissingField(String),
-    /// The compiler failed to compile an extracted schema.
-    #[error("compiler error for schema `{name}`: {reason}")]
-    CompileError {
-        /// Schema name.
-        name: String,
-        /// Compile error message.
-        reason: String,
-    },
 }
 
 /// OpenAPI version detected from the document.
@@ -72,24 +65,6 @@ pub struct SchemaEntry {
     pub schema: Value,
     /// The fully-qualified JSON Pointer path within the document.
     pub pointer: String,
-}
-
-/// A non-fatal diagnostic attached to a parsed document.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Diagnostic {
-    /// Severity of the diagnostic.
-    pub severity: Severity,
-    /// Human-readable message.
-    pub message: String,
-}
-
-/// Severity level of a [`Diagnostic`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Severity {
-    /// Informational note.
-    Info,
-    /// Non-fatal warning.
-    Warning,
 }
 
 /// A parsed OpenAPI document.
@@ -198,12 +173,10 @@ fn normalise(raw: Value, version: OpenApiVersion, diagnostics: &mut Vec<Diagnost
 }
 
 fn normalise_swagger(raw: Value, diagnostics: &mut Vec<Diagnostic>) -> Value {
-    diagnostics.push(Diagnostic {
-        severity: Severity::Warning,
-        message: "Swagger 2.0 document detected; converting to simplified OpenAPI form. \
-                  The conversion is lossy: some Swagger-specific features are ignored."
-            .to_owned(),
-    });
+    diagnostics.push(Diagnostic::warning(
+        "Swagger 2.0 document detected; converting to simplified OpenAPI form. \
+         The conversion is lossy: some Swagger-specific features are ignored.",
+    ));
     let Value::Object(mut obj) = raw else {
         return Value::Object(serde_json::Map::new());
     };
@@ -222,10 +195,9 @@ fn lift_definitions(obj: &mut serde_json::Map<String, Value>, diagnostics: &mut 
     if let Value::Object(comp) = components {
         comp.insert("schemas".to_owned(), defs);
     }
-    diagnostics.push(Diagnostic {
-        severity: Severity::Info,
-        message: "Swagger `definitions` moved to `components/schemas`.".to_owned(),
-    });
+    diagnostics.push(Diagnostic::info(
+        "Swagger `definitions` moved to `components/schemas`.",
+    ));
 }
 
 fn lift_body_parameters(
@@ -240,12 +212,9 @@ fn lift_body_parameters(
         converted += lift_body_params_in_path(path_item);
     }
     if converted > 0 {
-        diagnostics.push(Diagnostic {
-            severity: Severity::Info,
-            message: format!(
-                "Converted {converted} Swagger body parameter(s) to requestBody schemas."
-            ),
-        });
+        diagnostics.push(Diagnostic::info(format!(
+            "Converted {converted} Swagger body parameter(s) to requestBody schemas.",
+        )));
     }
 }
 
@@ -444,6 +413,7 @@ fn make_nullable_type(existing: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use schemaforge_diagnostics::Severity;
     use serde_json::json;
 
     const SIMPLE_OPENAPI_31: &str = r#"{

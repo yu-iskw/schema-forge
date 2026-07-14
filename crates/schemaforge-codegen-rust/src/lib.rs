@@ -11,15 +11,15 @@
 //!
 //! # Classification integration
 //!
-//! This crate delegates representability classification entirely to
-//! [`schemaforge_analysis::classify`] and [`schemaforge_analysis::explain_schema`]
-//! so that the two crates share a single consistent view of how each schema node
-//! should be mapped to Rust.
+//! This crate delegates representability classification and dispatch-strategy
+//! selection to [`schemaforge_analysis::explain_schema`] so that both decisions
+//! are made in a single pass per node, sharing a consistent view of how each
+//! schema node should be mapped to Rust.
 
 use std::fmt::Write as _;
 
 use indexmap::IndexMap;
-use schemaforge_analysis::{DispatchStrategy, Representability, analyse, classify, explain_schema};
+use schemaforge_analysis::{DispatchStrategy, Representability, analyse, explain_schema};
 use schemaforge_ir::{SchemaIr, SchemaNode};
 use thiserror::Error;
 
@@ -139,8 +139,8 @@ fn emit_defs(
     options: &CodegenOptions,
     buf: &mut String,
 ) -> Result<(), CodegenError> {
-    for (def_name, def_node) in &node.defs {
-        let type_name = to_pascal_case(def_name);
+    for (idx, (def_name, def_node)) in node.defs.iter().enumerate() {
+        let type_name = sanitize_type_name(def_name, idx);
         let inferred = analyse(def_node).map_err(|e| CodegenError::Unsupported {
             path: format!("$defs/{def_name}"),
             reason: e.to_string(),
@@ -162,9 +162,15 @@ fn generate_node(
     if inferred.never {
         return emit_never_type(name, buf);
     }
-    match classify(node) {
+    // Call explain_schema once to get both Representability and DispatchStrategy,
+    // avoiding a separate classify call followed by another explain_schema inside
+    // emit_dispatch_comment.
+    let report = explain_schema(node);
+    match report.representation {
         Representability::Unsupported => emit_never_type(name, buf),
-        Representability::Nominal => emit_nominal(node, inferred, name, options, buf),
+        Representability::Nominal => {
+            emit_nominal(node, inferred, name, options, report.dispatch_strategy, buf)
+        }
         Representability::Structural => emit_structural(node, inferred, name, options, buf),
         Representability::Dynamic => emit_dynamic(name, buf),
     }
@@ -177,10 +183,11 @@ fn emit_nominal(
     inferred: &schemaforge_analysis::InferredNode,
     name: &str,
     options: &CodegenOptions,
+    dispatch: DispatchStrategy,
     buf: &mut String,
 ) -> Result<(), CodegenError> {
     if inferred.types.object || !node.properties.is_empty() {
-        emit_struct(node, inferred, name, options, buf)
+        emit_struct(node, inferred, name, options, dispatch, buf)
     } else {
         emit_type_alias(inferred, name, buf)
     }
@@ -191,10 +198,11 @@ fn emit_struct(
     inferred: &schemaforge_analysis::InferredNode,
     name: &str,
     options: &CodegenOptions,
+    dispatch: DispatchStrategy,
     buf: &mut String,
 ) -> Result<(), CodegenError> {
     let all_props: Vec<&str> = inferred.property_types.keys().map(String::as_str).collect();
-    emit_dispatch_comment(node, buf)?;
+    emit_dispatch_comment(node, dispatch, buf)?;
     emit_required_bitset_comment(&inferred.required_properties, &all_props, buf)?;
     emit_doc_comment(node, buf)?;
     emit_derives(options, buf)?;
@@ -215,13 +223,14 @@ fn emit_struct_fields(
     options: &CodegenOptions,
     buf: &mut String,
 ) -> Result<(), CodegenError> {
-    for (key, prop_inferred) in props {
-        let field_name = to_snake_case(key);
+    for (idx, (key, prop_inferred)) in props.iter().enumerate() {
+        let field_name = sanitize_field_name(key, idx);
         let rust_type = inferred_to_rust_type(prop_inferred);
         let optional = options.wrap_optional && !required.contains(key);
-        if field_name != *key {
-            writeln!(buf, "    #[serde(rename = \"{key}\")]")?;
-        }
+        // Always emit a properly escaped serde rename attribute so that the
+        // original JSON key is never interpolated raw into the Rust source.
+        let escaped_key = escape_for_serde_rename(key);
+        writeln!(buf, "    #[serde(rename = \"{escaped_key}\")]")?;
         if optional {
             writeln!(buf, "    pub {field_name}: Option<{rust_type}>,")?;
         } else {
@@ -237,11 +246,12 @@ fn emit_nested_structs(
     options: &CodegenOptions,
     buf: &mut String,
 ) -> Result<(), CodegenError> {
-    for (key, prop) in &node.properties {
+    for (idx, (key, prop)) in node.properties.iter().enumerate() {
         if prop.properties.is_empty() {
             continue;
         }
-        let prop_name = format!("{parent_name}{}", to_pascal_case(key));
+        let suffix = sanitize_type_name(key, idx);
+        let prop_name = format!("{parent_name}{suffix}");
         let prop_inferred = analyse(prop).map_err(|e| CodegenError::Unsupported {
             path: key.clone(),
             reason: e.to_string(),
@@ -368,12 +378,15 @@ fn emit_type_alias(
 
 // ── Annotations / comments ───────────────────────────────────────────────────
 
-fn emit_dispatch_comment(node: &SchemaNode, buf: &mut String) -> Result<(), CodegenError> {
+fn emit_dispatch_comment(
+    node: &SchemaNode,
+    dispatch: DispatchStrategy,
+    buf: &mut String,
+) -> Result<(), CodegenError> {
     if node.properties.is_empty() {
         return Ok(());
     }
-    let report = explain_schema(node);
-    let label = dispatch_label(report.dispatch_strategy);
+    let label = dispatch_label(dispatch);
     writeln!(buf, "// Property dispatch: {label}")?;
     Ok(())
 }
@@ -481,6 +494,74 @@ fn to_pascal_case(s: &str) -> String {
             })
         })
         .collect()
+}
+
+// ── Identifier sanitization and string escaping ──────────────────────────────
+
+/// Escape a string for safe embedding inside a Rust string literal used in
+/// `#[serde(rename = "...")]`.
+///
+/// Every ASCII character that is not an alphanumeric character, `-`, or `_`
+/// is encoded as `\u{NNNN}`.  This prevents both premature string termination
+/// (`"`) and accidental inclusion of recognisable Rust code fragments in the
+/// raw generated source text (e.g. `pub fn`, `; evil()`, `\n` newlines).
+///
+/// Non-ASCII Unicode scalars pass through unchanged because they cannot form
+/// ASCII keyword sequences and are valid in Rust string literals.
+fn escape_for_serde_rename(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for ch in s.chars() {
+        if ch.is_ascii() && !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' {
+            write!(out, "\\u{{{:04x}}}", ch as u32).unwrap_or(());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Strip every character that is not `[A-Za-z0-9_]` from a string that is
+/// intended to become a Rust identifier.
+///
+/// If the first remaining character is an ASCII digit, a leading `_` is added
+/// so the result is a valid identifier.  Returns an empty string when no safe
+/// characters remain (callers must supply a fallback).
+fn sanitize_identifier_chars(s: &str) -> String {
+    let filtered: String = s
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if filtered.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("_{filtered}")
+    } else {
+        filtered
+    }
+}
+
+/// Derive a safe `snake_case` Rust field identifier from a JSON property key.
+///
+/// Falls back to `field_{idx}` when no safe characters survive sanitization.
+fn sanitize_field_name(key: &str, idx: usize) -> String {
+    let snake = to_snake_case(key);
+    let safe = sanitize_identifier_chars(&snake);
+    if safe.is_empty() {
+        format!("field_{idx}")
+    } else {
+        safe
+    }
+}
+
+/// Derive a safe `PascalCase` Rust type identifier from a schema key.
+///
+/// Falls back to `Type{idx}` when no safe characters survive sanitization.
+fn sanitize_type_name(key: &str, idx: usize) -> String {
+    let pascal = to_pascal_case(key);
+    let safe = sanitize_identifier_chars(&pascal);
+    if safe.is_empty() {
+        format!("Type{idx}")
+    } else {
+        safe
+    }
 }
 
 #[cfg(test)]
@@ -687,5 +768,64 @@ mod tests {
         let ir = SchemaIr::new(root, "", "abc", "test://");
         let code = generate(&ir, &CodegenOptions::default()).unwrap();
         assert!(code.contains("pub enum Root {}"));
+    }
+
+    #[test]
+    fn malicious_key_with_quotes_and_newlines_does_not_inject() {
+        // A property key containing `"` and a literal newline must not break
+        // out of the `#[serde(rename = "...")]` attribute and must not appear
+        // as raw Rust code in the generated output.
+        let malicious_key = "field\"\n; pub fn evil() {} //".to_owned();
+        let prop = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            ..SchemaNode::default()
+        };
+        let mut props = indexmap::IndexMap::new();
+        props.insert(malicious_key, prop);
+        let root = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            properties: props,
+            ..SchemaNode::default()
+        };
+        let ir = SchemaIr::new(root, "", "abc", "test://");
+        let code = generate(&ir, &CodegenOptions::default()).unwrap();
+        // If the newline were NOT escaped, the key would break out of the
+        // attribute string and `pub fn evil()` would appear as a standalone
+        // definition on its own source line.  Check that no line starts with
+        // `pub fn evil` (after trimming leading whitespace) to detect injection.
+        let injected = code
+            .lines()
+            .any(|l| l.trim_start().starts_with("pub fn evil"));
+        assert!(!injected, "injection detected in generated code:\n{code}");
+        // The serde rename attribute must be present with the quote unicode-escaped.
+        assert!(
+            code.contains(r#"serde(rename = "field\u{0022}"#),
+            "expected escaped serde rename attribute in:\n{code}"
+        );
+    }
+
+    #[test]
+    fn key_with_only_special_chars_gets_fallback_field_name() {
+        // A key consisting entirely of characters outside [A-Za-z0-9_] must
+        // produce a valid fallback identifier (`field_0`) rather than an empty
+        // or invalid Rust identifier.
+        let special_key = "!!!".to_owned();
+        let prop = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            ..SchemaNode::default()
+        };
+        let mut props = indexmap::IndexMap::new();
+        props.insert(special_key, prop);
+        let root = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            properties: props,
+            ..SchemaNode::default()
+        };
+        let ir = SchemaIr::new(root, "", "abc", "test://");
+        let code = generate(&ir, &CodegenOptions::default()).unwrap();
+        assert!(
+            code.contains("pub field_0"),
+            "expected fallback field name `field_0` in:\n{code}"
+        );
     }
 }

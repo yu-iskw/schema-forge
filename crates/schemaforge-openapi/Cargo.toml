@@ -11,9 +11,7 @@ categories.workspace = true
 description = "OpenAPI 3.x document parsing and JSON Schema extraction for Schemaforge."
 
 [dependencies]
-schemaforge-source.workspace = true
-schemaforge-jsonschema.workspace = true
-schemaforge-compiler.workspace = true
+schemaforge-diagnostics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde-saphyr.workspace = true

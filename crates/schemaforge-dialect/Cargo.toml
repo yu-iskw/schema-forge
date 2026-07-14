@@ -11,11 +11,7 @@ categories.workspace = true
 description = "JSON Schema dialect detection and vocabulary management for Schemaforge."
 
 [dependencies]
-schemaforge-source.workspace = true
-schemaforge-diagnostics.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
 //! Schema explanation helpers: representation strategy and codegen decisions.
 
-use schemaforge_analysis::{InferredNode, explain_schema};
+use schemaforge_analysis::{ExplainReport, Representability, explain_schema};
 use schemaforge_ir::{SchemaIr, SchemaNode, TypeSet};
 use serde::{Deserialize, Serialize};
 
@@ -22,26 +22,20 @@ pub struct ExplainResult {
 }
 
 /// Explain the representation strategy for a compiled [`SchemaIr`].
+///
+/// Uses [`explain_schema`] as the single analysis pass; does not run the
+/// full `analyse` inference separately.
 #[must_use]
 pub fn explain_ir(ir: &SchemaIr) -> ExplainResult {
     let root = &ir.root;
-    let analysis_report = explain_schema(root);
-    let (inferred, analysis_error) = match schemaforge_analysis::analyse(root) {
-        Ok(inf) => (Some(inf), None),
-        Err(e) => (None, Some(format!("analysis error: {e}"))),
-    };
+    let report = explain_schema(root);
     ExplainResult {
         dialect_uri: ir.dialect_uri.clone(),
         type_strategy: describe_type_strategy(root.types),
         nullable: root.types.null,
         property_count: root.properties.len(),
         combinator_count: count_combinators(root),
-        codegen_hints: make_codegen_hints(
-            root,
-            inferred.as_ref(),
-            analysis_report.fallback_reasons,
-            analysis_error,
-        ),
+        codegen_hints: make_codegen_hints(root, &report),
     }
 }
 
@@ -63,20 +57,10 @@ fn build_type_name(types: TypeSet) -> String {
     types.type_names().join("|")
 }
 
-fn make_codegen_hints(
-    node: &SchemaNode,
-    inferred: Option<&InferredNode>,
-    fallback_reasons: Vec<String>,
-    analysis_error: Option<String>,
-) -> Vec<String> {
+fn make_codegen_hints(node: &SchemaNode, report: &ExplainReport) -> Vec<String> {
     let mut hints = base_codegen_hints(node);
-    if let Some(inf) = inferred {
-        append_analysis_hints(inf, &mut hints);
-    }
-    hints.extend(fallback_reasons);
-    if let Some(err) = analysis_error {
-        hints.push(err);
-    }
+    append_representation_hints(node, report.representation, &mut hints);
+    hints.extend(report.fallback_reasons.iter().cloned());
     hints
 }
 
@@ -94,14 +78,27 @@ fn base_codegen_hints(node: &SchemaNode) -> Vec<String> {
     hints
 }
 
-fn append_analysis_hints(inf: &InferredNode, hints: &mut Vec<String>) {
-    if inf.nullable {
+/// Append high-level representability hints derived from the [`ExplainReport`].
+///
+/// These replace the separate `analyse` pass by reading the coarser
+/// [`Representability`] classification and the node's type flags directly.
+fn append_representation_hints(
+    node: &SchemaNode,
+    representation: Representability,
+    hints: &mut Vec<String>,
+) {
+    if node.types.null {
         hints.push("fields wrapped in Option<T>".to_owned());
     }
-    if inf.never {
+    if representation == Representability::Unsupported {
         hints.push("schema is never (always fails)".to_owned());
     }
-    if inf.any {
+    // Fully unconstrained dynamic schema (no union branches, no properties).
+    if representation == Representability::Dynamic
+        && node.any_of.is_empty()
+        && node.one_of.is_empty()
+        && node.properties.is_empty()
+    {
         hints.push("schema accepts any value".to_owned());
     }
 }
