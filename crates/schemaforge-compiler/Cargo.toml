@@ -1,0 +1,29 @@
+[package]
+name = "schemaforge-compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Core compilation pipeline: JSON Schema source → IR."
+
+[dependencies]
+schemaforge-source.workspace = true
+schemaforge-diagnostics.workspace = true
+schemaforge-dialect.workspace = true
+schemaforge-resolver.workspace = true
+schemaforge-ir.workspace = true
+schemaforge-jsonschema.workspace = true
+schemaforge-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+indexmap.workspace = true
+
+[lints]
+workspace = true
