@@ -394,6 +394,13 @@ fn adapt_oas30_schema(schema: &Value) -> Value {
             if !enum_vals.contains(&Value::Null) {
                 enum_vals.push(Value::Null);
             }
+            // When a `type` keyword is also present alongside `enum`, the type
+            // constraint further restricts valid values.  Widen it to include
+            // "null" so that the null we just added to the enum can pass.
+            if new_obj.contains_key("type") {
+                let type_val = new_obj.get("type").cloned().unwrap_or(Value::Null);
+                new_obj.insert("type".to_owned(), make_nullable_type(type_val));
+            }
         } else if let Some(const_val) = new_obj.remove("const") {
             // const present: convert to enum [const_val, null] so null is permitted.
             new_obj.insert(
@@ -413,11 +420,16 @@ fn adapt_oas30_schema(schema: &Value) -> Value {
 
     // Recurse into all sub-schema locations.
     adapt_map_values(&mut new_obj, "properties");
+    adapt_map_values(&mut new_obj, "patternProperties");
     adapt_map_values(&mut new_obj, "$defs");
     adapt_map_values(&mut new_obj, "definitions");
+    adapt_map_values(&mut new_obj, "dependentSchemas");
     adapt_single(&mut new_obj, "items");
     adapt_single(&mut new_obj, "additionalProperties");
     adapt_single(&mut new_obj, "not");
+    adapt_single(&mut new_obj, "if");
+    adapt_single(&mut new_obj, "then");
+    adapt_single(&mut new_obj, "else");
     adapt_array_values(&mut new_obj, "prefixItems");
     adapt_array_values(&mut new_obj, "allOf");
     adapt_array_values(&mut new_obj, "anyOf");
@@ -646,6 +658,24 @@ mod tests {
         assert!(adapted.get("nullable").is_none());
         // type should NOT be present (only enum controls valid values).
         assert!(adapted.get("type").is_none());
+    }
+
+    #[test]
+    fn adapt_oas30_nullable_with_type_and_enum_widens_type() {
+        // nullable: true + type + enum: null must be added to both enum AND type
+        // so that a null value passes both the type check and the enum check.
+        let schema = json!({"type": "string", "enum": ["foo", "bar"], "nullable": true});
+        let adapted = adapt_oas30_schema(&schema);
+        // null must be in the enum array.
+        let vals = adapted["enum"].as_array().unwrap();
+        assert!(vals.contains(&Value::Null), "null must be in enum");
+        // type must also include null so the null enum value is reachable.
+        let types = adapted["type"].as_array().unwrap();
+        assert!(types.contains(&json!("null")), "null must be in type");
+        assert!(
+            types.contains(&json!("string")),
+            "string must remain in type"
+        );
     }
 
     #[test]
@@ -903,6 +933,47 @@ mod tests {
         let count = &adapted["properties"]["count"];
         assert_eq!(count["exclusiveMinimum"], json!(0));
         assert!(count.get("minimum").is_none());
+    }
+
+    #[test]
+    fn adapt_oas30_nullable_recursive_pattern_properties() {
+        // Nullable fields nested inside `patternProperties` must also be adapted.
+        let schema = json!({
+            "type": "object",
+            "patternProperties": {
+                "^x-": {"type": "string", "nullable": true}
+            }
+        });
+        let adapted = adapt_oas30_schema(&schema);
+        let pp_schema = &adapted["patternProperties"]["^x-"];
+        let types = pp_schema["type"].as_array().unwrap();
+        assert!(
+            types.contains(&json!("null")),
+            "nested nullable patternProperty must have null in type"
+        );
+        assert!(
+            types.contains(&json!("string")),
+            "nested patternProperty must retain original type"
+        );
+        assert!(
+            pp_schema.get("nullable").is_none(),
+            "nullable key must be removed from nested patternProperty"
+        );
+    }
+
+    #[test]
+    fn adapt_oas30_nullable_recursive_if_then_else() {
+        // Nullable inside if/then/else must be adapted.
+        let schema = json!({
+            "if": {"type": "string"},
+            "then": {"type": "string", "nullable": true},
+            "else": {"type": "integer", "nullable": true}
+        });
+        let adapted = adapt_oas30_schema(&schema);
+        let then_types = adapted["then"]["type"].as_array().unwrap();
+        assert!(then_types.contains(&json!("null")));
+        let else_types = adapted["else"]["type"].as_array().unwrap();
+        assert!(else_types.contains(&json!("null")));
     }
 
     #[test]

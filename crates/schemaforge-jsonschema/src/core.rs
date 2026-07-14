@@ -46,7 +46,7 @@ fn apply_ref(
 /// Pointers against the root schema document.  Absolute or relative URIs are
 /// looked up in the external registry.  Returns `None` when the target cannot
 /// be found, which callers treat as a validation failure.
-fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Option<&'a Value> {
+pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Option<&'a Value> {
     if let Some(pointer) = ref_uri.strip_prefix('#') {
         return resolve_json_pointer(ctx.root_schema, pointer);
     }

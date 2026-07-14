@@ -4,6 +4,10 @@
 //! `patternProperties`, `additionalProperties`, `prefixItems`, and `items`
 //! at the current schema level, as well as property names declared in
 //! `allOf`, `anyOf`, and `oneOf` sub-schema `properties` objects.
+//!
+//! For `allOf` the union of every branch's properties is considered evaluated
+//! (all branches must pass).  For `anyOf`/`oneOf` only properties from
+//! branches that actually validated the instance successfully are counted.
 
 use std::collections::HashSet;
 
@@ -38,7 +42,7 @@ fn apply_unevaluated_properties(
     let has_additional = obj.contains_key("additionalProperties");
     // Build once — not per instance key — so large objects don't re-walk
     // allOf/anyOf/oneOf branches on every property.
-    let branch_props = applicator_branch_evaluated_properties(obj);
+    let branch_props = applicator_branch_evaluated_properties(obj, instance, ctx);
     for (key, value) in inst {
         if is_property_evaluated(key, &explicit, obj, has_additional, &branch_props, ctx) {
             continue;
@@ -53,7 +57,7 @@ fn is_property_evaluated(
     explicit: &HashSet<&str>,
     obj: &Map<String, Value>,
     has_additional: bool,
-    branch_props: &HashSet<&str>,
+    branch_props: &HashSet<String>,
     ctx: &ValidationContext<'_>,
 ) -> bool {
     if explicit.contains(key) {
@@ -65,33 +69,75 @@ fn is_property_evaluated(
     if crate::applicator::matches_any_pattern_property(obj, key, ctx) {
         return true;
     }
-    // A property listed in any allOf/anyOf/oneOf branch's `properties` is
-    // considered evaluated by that applicator at this schema level.
+    // A property listed in a successful allOf/anyOf/oneOf branch's `properties`
+    // is considered evaluated by that applicator at this schema level.
     branch_props.contains(key)
 }
 
-/// Collect property names from the `properties` of every branch inside
-/// `allOf`, `anyOf`, and `oneOf`.  These properties are considered evaluated
-/// by the applicator and must not be rejected by `unevaluatedProperties`.
-fn applicator_branch_evaluated_properties<'a>(obj: &'a Map<String, Value>) -> HashSet<&'a str> {
-    let mut evaluated: HashSet<&'a str> = HashSet::new();
-    for applicator_key in &["allOf", "anyOf", "oneOf"] {
+/// Collect property names that are considered evaluated by each applicator.
+///
+/// - `allOf`: every branch must pass, so all declared properties from every
+///   branch are evaluated regardless of whether the instance has them.
+/// - `anyOf` / `oneOf`: only properties from branches that actually validate
+///   the current instance successfully are counted as evaluated.
+///
+/// If a branch contains `$ref` the referenced schema's `properties` are also
+/// collected (local fragment references only).
+fn applicator_branch_evaluated_properties(
+    obj: &Map<String, Value>,
+    instance: &Value,
+    ctx: &ValidationContext<'_>,
+) -> HashSet<String> {
+    let mut evaluated: HashSet<String> = HashSet::new();
+
+    // allOf: union all branches unconditionally (all must pass).
+    if let Some(Value::Array(branches)) = obj.get("allOf") {
+        for branch in branches {
+            collect_branch_props(branch, &mut evaluated, ctx);
+        }
+    }
+
+    // anyOf/oneOf: only include props from branches the instance actually matches.
+    for applicator_key in &["anyOf", "oneOf"] {
         let Some(Value::Array(branches)) = obj.get(*applicator_key) else {
             continue;
         };
         for branch in branches {
-            let Value::Object(branch_obj) = branch else {
-                continue;
-            };
-            let Some(Value::Object(props)) = branch_obj.get("properties") else {
-                continue;
-            };
-            for key in props.keys() {
-                evaluated.insert(key.as_str());
+            if validate_schema(branch, instance, "", ctx).is_valid() {
+                collect_branch_props(branch, &mut evaluated, ctx);
             }
         }
     }
+
     evaluated
+}
+
+/// Collect property names declared in `branch.properties` (and in any schema
+/// reached via a local `$ref`) into `evaluated`.
+fn collect_branch_props(
+    branch: &Value,
+    evaluated: &mut HashSet<String>,
+    ctx: &ValidationContext<'_>,
+) {
+    let Value::Object(branch_obj) = branch else {
+        return;
+    };
+    collect_props_from_obj(branch_obj, evaluated);
+
+    // Follow a local `$ref` (fragment-only) and collect its properties too.
+    if let Some(Value::String(ref_uri)) = branch_obj.get("$ref")
+        && let Some(Value::Object(target_obj)) = crate::core::resolve_ref(ref_uri, ctx)
+    {
+        collect_props_from_obj(target_obj, evaluated);
+    }
+}
+
+fn collect_props_from_obj(obj: &Map<String, Value>, evaluated: &mut HashSet<String>) {
+    if let Some(Value::Object(props)) = obj.get("properties") {
+        for key in props.keys() {
+            evaluated.insert(key.clone());
+        }
+    }
 }
 
 fn apply_unevaluated_items(
@@ -212,5 +258,73 @@ mod tests {
         });
         assert!(valid(&s, &json!({"x": "hello"})));
         assert!(!valid(&s, &json!({"x": "hello", "y": 1})));
+    }
+
+    // ── anyOf/oneOf: only successful branches count ───────────────────────────
+
+    #[test]
+    fn unevaluated_properties_anyof_failed_branch_props_not_evaluated() {
+        // Two anyOf branches: branch 0 requires type=string (will fail for objects),
+        // branch 1 declares property "b".  A property "a" that exists ONLY in branch 0
+        // must NOT be treated as evaluated when branch 0 fails validation.
+        let s = json!({
+            "anyOf": [
+                // Branch 0: only valid for strings, declares prop "a"
+                {"type": "string", "properties": {"a": true}},
+                // Branch 1: valid for any object, declares prop "b"
+                {"properties": {"b": true}}
+            ],
+            "unevaluatedProperties": false
+        });
+        let instance = json!({"a": 1, "b": 2});
+        // Branch 0 fails (not a string), so "a" must NOT be considered evaluated.
+        // Branch 1 passes, so "b" is evaluated.
+        // Therefore "a" is an unevaluated property and must be rejected.
+        assert!(
+            !valid(&s, &instance),
+            "property 'a' from a failing anyOf branch must not be treated as evaluated"
+        );
+        // Instance with only "b" should pass (branch 1 succeeds).
+        assert!(valid(&s, &json!({"b": 2})));
+    }
+
+    #[test]
+    fn unevaluated_properties_oneof_failed_branch_props_not_evaluated() {
+        // oneOf with two branches; only the matching branch's props are evaluated.
+        let s = json!({
+            "oneOf": [
+                {"properties": {"a": true}, "required": ["a"], "additionalProperties": false},
+                {"properties": {"b": true}, "required": ["b"], "additionalProperties": false}
+            ],
+            "unevaluatedProperties": false
+        });
+        // Instance matches branch 1 only; "b" is evaluated.
+        assert!(valid(&s, &json!({"b": 2})));
+        // Instance matches branch 0 only; "a" is evaluated.
+        assert!(valid(&s, &json!({"a": 1})));
+        // Instance matches neither branch; oneOf already fails, unevaluated doesn't matter.
+        assert!(!valid(&s, &json!({"c": 3})));
+    }
+
+    // ── $ref in allOf branch ──────────────────────────────────────────────────
+
+    #[test]
+    fn unevaluated_properties_allof_ref_branch_properties_evaluated() {
+        // allOf branch uses $ref to a local definition. Properties from the
+        // referenced schema must be considered evaluated.
+        let s = json!({
+            "$defs": {
+                "Named": {"properties": {"name": {"type": "string"}}}
+            },
+            "allOf": [{"$ref": "#/$defs/Named"}],
+            "unevaluatedProperties": false
+        });
+        // "name" is declared in the $ref target → must be treated as evaluated.
+        assert!(
+            valid(&s, &json!({"name": "Alice"})),
+            "property from $ref target in allOf branch must be treated as evaluated"
+        );
+        // Unknown extra property must still be rejected.
+        assert!(!valid(&s, &json!({"name": "Alice", "extra": 1})));
     }
 }
