@@ -8,6 +8,7 @@
 //!
 //! - [`analyse`] — full inference pass, returns an [`InferredNode`].
 //! - [`classify`] — classify how well a node maps to a static Rust type.
+//! - [`suggest_dispatch`] — property-dispatch hint for a classified node.
 //! - [`explain_schema`] — combined classification + dispatch + cost report.
 //! - [`estimated_generated_bytes`] — quick byte-cost estimate.
 //! - [`find_breaking_changes`] — compare two schema nodes and report
@@ -19,7 +20,7 @@ pub mod explain;
 
 pub use classify::{Representability, classify, pick_variants};
 pub use cost::estimated_generated_bytes;
-pub use explain::{DispatchStrategy, ExplainReport, explain_schema};
+pub use explain::{DispatchStrategy, ExplainReport, explain_schema, suggest_dispatch};
 
 use indexmap::IndexMap;
 use schemaforge_ir::{SchemaNode, TypeSet};

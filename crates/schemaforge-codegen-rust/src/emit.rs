@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use indexmap::IndexMap;
 use schemaforge_analysis::{
-    DispatchStrategy, Representability, analyse, explain_schema, pick_variants,
+    DispatchStrategy, Representability, analyse, classify, pick_variants, suggest_dispatch,
 };
 use schemaforge_ir::SchemaNode;
 
@@ -86,20 +86,14 @@ pub(crate) fn generate_node(
     if inferred.never {
         return emit_never_type(name, buf);
     }
-    let report = explain_schema(node);
-    match report.representation {
+    // classify + suggest_dispatch only — avoid explain_schema's unused
+    // fallback_reasons / estimated_bytes walk on every generated node.
+    match classify(node) {
         Representability::Unsupported => emit_never_type(name, buf),
         Representability::Nominal => {
             if inferred.types.object || !node.properties.is_empty() {
-                emit_struct(
-                    node,
-                    inferred,
-                    name,
-                    report.dispatch_strategy,
-                    options,
-                    buf,
-                    alloc,
-                )
+                let dispatch = suggest_dispatch(node, Representability::Nominal);
+                emit_struct(node, inferred, name, dispatch, options, buf, alloc)
             } else {
                 emit_type_alias(inferred, name, buf)
             }
@@ -213,14 +207,15 @@ fn emit_nested_struct_defs(
         };
         // Reuse the cached InferredNode from the parent to avoid re-analysing
         // the same property schema a second time.
-        let prop_inferred = match inferred.property_types.get(key) {
-            Some(cached) => cached.clone(),
-            None => analyse(prop).map_err(|e| CodegenError::Unsupported {
+        if let Some(cached) = inferred.property_types.get(key) {
+            generate_node(prop, cached, type_name, options, buf, alloc)?;
+        } else {
+            let prop_inferred = analyse(prop).map_err(|e| CodegenError::Unsupported {
                 path: key.clone(),
                 reason: e.to_string(),
-            })?,
-        };
-        generate_node(prop, &prop_inferred, type_name, options, buf, alloc)?;
+            })?;
+            generate_node(prop, &prop_inferred, type_name, options, buf, alloc)?;
+        }
     }
     Ok(())
 }

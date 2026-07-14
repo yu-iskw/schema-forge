@@ -62,7 +62,13 @@ pub fn explain_schema(node: &SchemaNode) -> ExplainReport {
     }
 }
 
-fn suggest_dispatch(node: &SchemaNode, rep: Representability) -> DispatchStrategy {
+/// Suggest a property-dispatch strategy for `node` given its `representation`.
+///
+/// Prefer this (with [`classify`]) over [`explain_schema`] when the caller only
+/// needs classification and dispatch — explain also builds fallback reasons and
+/// walks the tree for a byte-cost estimate.
+#[must_use]
+pub fn suggest_dispatch(node: &SchemaNode, rep: Representability) -> DispatchStrategy {
     match rep {
         Representability::Dynamic | Representability::Unsupported => DispatchStrategy::RuntimeAny,
         Representability::Structural if !node.any_of.is_empty() || !node.one_of.is_empty() => {

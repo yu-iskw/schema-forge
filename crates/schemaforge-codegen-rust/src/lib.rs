@@ -12,9 +12,10 @@
 //! # Classification integration
 //!
 //! This crate delegates representability classification and dispatch-strategy
-//! selection to [`schemaforge_analysis::explain_schema`] so that both decisions
-//! are made in a single pass per node, sharing a consistent view of how each
-//! schema node should be mapped to Rust.
+//! selection to [`schemaforge_analysis::classify`] and
+//! [`schemaforge_analysis::suggest_dispatch`] (not the heavier
+//! [`schemaforge_analysis::explain_schema`] report) so codegen avoids unused
+//! cost-estimate and fallback-reason work on every node.
 
 use std::collections::HashSet;
 
