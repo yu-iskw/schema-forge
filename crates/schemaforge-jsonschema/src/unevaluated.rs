@@ -93,7 +93,7 @@ fn is_property_evaluated(
 /// structurally valid at validation time are also fully analysed during the
 /// unevaluated-properties/items pre-pass rather than being silently
 /// under-evaluated.
-const MAX_BRANCH_REF_DEPTH: usize = 128;
+const MAX_BRANCH_REF_DEPTH: usize = crate::MAX_DEPTH as usize;
 
 /// Invoke `f` for each successful `anyOf` / `oneOf` branch.
 fn for_each_successful_anyof_oneof<'a>(

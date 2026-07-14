@@ -11,7 +11,8 @@ pub(crate) fn normalize_uri(mut uri: String) -> String {
 /// Split a URI into `(base, fragment)` at the first `#`.
 ///
 /// Returns `(uri, "")` when the URI contains no `#`.
-pub(crate) fn split_uri_fragment(uri: &str) -> (&str, &str) {
+#[must_use]
+pub fn split_uri_fragment(uri: &str) -> (&str, &str) {
     uri.find('#')
         .map_or((uri, ""), |pos| (&uri[..pos], &uri[pos + 1..]))
 }
@@ -46,7 +47,11 @@ pub fn resolve_uri(base: &str, reference: &str) -> String {
     }
 }
 
-pub(crate) fn is_absolute_uri(uri: &str) -> bool {
+/// Return `true` when `uri` is self-contained and must not be resolved
+/// relative to any base.  Covers `scheme://…` URIs (http, https, file, …)
+/// and `urn:` URNs.
+#[must_use]
+pub fn is_absolute_uri(uri: &str) -> bool {
     uri.contains("://") || uri.starts_with("urn:")
 }
 

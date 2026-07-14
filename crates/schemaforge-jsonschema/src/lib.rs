@@ -22,12 +22,15 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
+use schemaforge_dialect::schema_children::{
+    SCHEMA_ARRAY_KEYWORDS, SCHEMA_MAP_KEYWORDS, SCHEMA_SINGLE_KEYWORDS,
+};
 use schemaforge_formats::FormatRegistry;
 use serde_json::{Map, Value};
 use thiserror::Error;
 
 /// Maximum schema evaluation depth before aborting with an error.
-const MAX_DEPTH: u32 = 128;
+pub(crate) const MAX_DEPTH: u32 = 128;
 
 /// Error returned when a schema cannot be compiled.
 #[derive(Debug, Error)]
@@ -238,41 +241,11 @@ impl Validator {
     }
 }
 
-// ── Schema-child keyword sets ─────────────────────────────────────────────────
+// ── Schema-child keyword walks ────────────────────────────────────────────────
 //
 // Construction-time walks (anchor collection, unsupported-keyword checks,
 // pattern precompilation) must only descend into *schema*-valued keywords.
-// Non-schema annotations such as `default`, `const`, `enum`, `examples`,
-// `title`, and `description` are plain JSON values; recursing into them would
-// falsely register anchors, block unsupported-keyword checks, or reject valid
-// literal values that contain regex-like strings.
-
-/// Keywords whose value is a single sub-schema.
-const SCHEMA_SINGLE_KEYWORDS: &[&str] = &[
-    "additionalProperties",
-    "contains",
-    "contentSchema",
-    "else",
-    "if",
-    "items",
-    "not",
-    "propertyNames",
-    "then",
-    "unevaluatedItems",
-    "unevaluatedProperties",
-];
-
-/// Keywords whose value is an array of sub-schemas.
-const SCHEMA_ARRAY_KEYWORDS: &[&str] = &["allOf", "anyOf", "oneOf", "prefixItems"];
-
-/// Keywords whose value is an object mapping names to sub-schemas.
-const SCHEMA_MAP_KEYWORDS: &[&str] = &[
-    "$defs",
-    "definitions",
-    "dependentSchemas",
-    "patternProperties",
-    "properties",
-];
+// See [`schemaforge_dialect::schema_children`] for the shared allowlists.
 
 /// Call `f` for each immediately reachable child schema of `obj`.
 ///

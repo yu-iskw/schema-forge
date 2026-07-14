@@ -1,44 +1,11 @@
 //! URI fragment application for resolved JSON Schema documents.
 
+use schemaforge_dialect::schema_children::{
+    SCHEMA_ARRAY_KEYWORDS, SCHEMA_MAP_KEYWORDS, SCHEMA_SINGLE_KEYWORDS,
+};
 use serde_json::{Map, Value};
 
 use crate::ResolveError;
-
-// ── Schema-child keyword allowlists ──────────────────────────────────────────
-//
-// These lists mirror the constants in `schemaforge-jsonschema` and must be
-// kept in sync with them.  Only keywords whose value is a sub-schema (or a
-// collection of sub-schemas) are included.  Non-schema annotations such as
-// `default`, `const`, `enum`, `examples`, `title`, and `description` are
-// deliberately excluded so that `$anchor` strings inside those values are
-// never mistaken for registered anchors.
-
-/// Keywords whose value is a single sub-schema.
-const SCHEMA_SINGLE_KEYWORDS: &[&str] = &[
-    "additionalProperties",
-    "contains",
-    "contentSchema",
-    "else",
-    "if",
-    "items",
-    "not",
-    "propertyNames",
-    "then",
-    "unevaluatedItems",
-    "unevaluatedProperties",
-];
-
-/// Keywords whose value is an array of sub-schemas.
-const SCHEMA_ARRAY_KEYWORDS: &[&str] = &["allOf", "anyOf", "oneOf", "prefixItems"];
-
-/// Keywords whose value is an object mapping names to sub-schemas.
-const SCHEMA_MAP_KEYWORDS: &[&str] = &[
-    "$defs",
-    "definitions",
-    "dependentSchemas",
-    "patternProperties",
-    "properties",
-];
 
 /// Apply a URI fragment to a loaded JSON document.
 ///
@@ -62,11 +29,11 @@ pub(crate) fn apply(doc: Value, fragment: &str, uri: &str) -> Result<Value, Reso
 /// Recursively scan `val` for the first JSON object whose `"$anchor"` string
 /// property equals `name` and return a clone of that object.
 ///
-/// Only descends into schema-valued keyword positions (the same allowlists
-/// used by the `schemaforge-jsonschema` construction-time walks).
-/// Non-schema annotations such as `default`, `const`, `enum`, and `examples`
-/// are intentionally skipped so that an `$anchor` string inside those values
-/// is never mistaken for a registered anchor.
+/// Only descends into schema-valued keyword positions (see
+/// [`schemaforge_dialect::schema_children`]).  Non-schema annotations such as
+/// `default`, `const`, `enum`, and `examples` are intentionally skipped so that
+/// an `$anchor` string inside those values is never mistaken for a registered
+/// anchor.
 fn find_anchor_in_value(val: &Value, name: &str) -> Option<Value> {
     let Value::Object(obj) = val else {
         return None;

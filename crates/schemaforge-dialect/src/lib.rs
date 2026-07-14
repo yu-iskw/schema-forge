@@ -3,6 +3,8 @@
 //! Supports JSON Schema drafts 4, 6, 7, 2019-09, and 2020-12. The primary
 //! target is **Draft 2020-12**, which is tried first during detection.
 
+pub mod schema_children;
+
 use serde_json::Value;
 
 /// Well-known JSON Schema dialect URIs.

@@ -12,6 +12,8 @@ description = "JSON Schema Draft 2020-12 validator for Schemaforge."
 
 [dependencies]
 schemaforge-formats.workspace = true
+schemaforge-dialect.workspace = true
+schemaforge-resolver.workspace = true
 serde_json.workspace = true
 regex.workspace = true
 thiserror.workspace = true

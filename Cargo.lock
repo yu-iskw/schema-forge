@@ -745,7 +745,9 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "regex",
+ "schemaforge-dialect",
  "schemaforge-formats",
+ "schemaforge-resolver",
  "schemaforge-runtime",
  "serde",
  "serde_json",
@@ -786,6 +788,7 @@ dependencies = [
 name = "schemaforge-resolver"
 version = "0.1.0"
 dependencies = [
+ "schemaforge-dialect",
  "serde",
  "serde_json",
  "thiserror",

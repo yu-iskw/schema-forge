@@ -72,7 +72,7 @@ pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Opt
     }
 
     // External reference: split off any fragment before the registry look-up.
-    let (base_ref, fragment) = split_uri_fragment(ref_uri);
+    let (base_ref, fragment) = schemaforge_resolver::split_uri_fragment(ref_uri);
     let key = build_registry_key(base_ref, ctx.base_uri);
     let doc = ctx.registry.get(&key)?;
 
@@ -86,27 +86,12 @@ pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Opt
     }
 }
 
-/// Split a URI into `(base, fragment)` at the first `#`.
-///
-/// Returns `(uri, "")` when the URI contains no `#`.
-fn split_uri_fragment(uri: &str) -> (&str, &str) {
-    uri.find('#')
-        .map_or((uri, ""), |pos| (&uri[..pos], &uri[pos + 1..]))
-}
-
 fn build_registry_key(ref_uri: &str, base_uri: &str) -> String {
-    if is_absolute_uri(ref_uri) {
+    if schemaforge_resolver::is_absolute_uri(ref_uri) {
         ref_uri.to_owned()
     } else {
         format!("{base_uri}{ref_uri}")
     }
-}
-
-/// Return `true` when `uri` is self-contained and must not be resolved
-/// relative to any base.  Covers `scheme://…` URIs (http, https, file, …)
-/// and `urn:` URNs.
-fn is_absolute_uri(uri: &str) -> bool {
-    uri.contains("://") || uri.starts_with("urn:")
 }
 
 // ── JSON Pointer resolution ───────────────────────────────────────────────────
