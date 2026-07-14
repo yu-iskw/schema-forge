@@ -13,6 +13,7 @@ description = "Diagnostic reporting (errors, warnings, hints) for Schemaforge."
 [dependencies]
 schemaforge-source.workspace = true
 thiserror.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

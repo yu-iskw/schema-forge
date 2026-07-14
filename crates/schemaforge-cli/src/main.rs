@@ -1,48 +1,104 @@
 //! Schemaforge command-line interface.
 //!
-//! # Usage
+//! # Commands
 //!
-//! ```text
-//! schemaforge compile   schema.json           # Compile to IR (JSON)
-//! schemaforge validate  schema.json data.json # Validate instance
-//! schemaforge codegen   schema.json           # Generate Rust types
-//! schemaforge info      schema.json           # Print dialect / digest
-//! ```
+//! | Command         | Aliases              | Description                              |
+//! |-----------------|----------------------|------------------------------------------|
+//! | `inspect`       | `info`               | Dialect, node count, capabilities        |
+//! | `normalize`     |                      | OpenAPI 3.0 nullable → type arrays       |
+//! | `generate`      | `compile`, `codegen` | Generate Rust types from a schema        |
+//! | `validate`      |                      | Validate a JSON instance against schema  |
+//! | `benchmark`     |                      | Time the compilation pipeline            |
+//! | `explain`       |                      | Print representation / strategy info     |
+//! | `compatibility` |                      | Detect breaking changes between schemas  |
+//! | `vendor`        |                      | Copy local schema files to vendor dir    |
+//! | `lock`          |                      | Write `schemaforge.lock.toml`            |
 
-use std::path::PathBuf;
+mod error;
+
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use schemaforge_compiler::{CompileError, Compiler};
-use schemaforge_jsonschema::{ValidationOptions, Validator};
-use thiserror::Error;
+use schemaforge_compiler::Compiler;
+use sha2::{Digest, Sha256};
+
+use crate::error::{CliError, DiagFormat, from_compile, print_error, to_exit_code};
+
+// ── CLI definition ─────────────────────────────────────────────────────────────
 
 /// Schemaforge — hybrid JSON Schema compiler.
 #[derive(Debug, Parser)]
 #[command(name = "schemaforge", version, about, long_about = None)]
 struct Cli {
+    /// Diagnostic output format.
+    #[arg(long, global = true, default_value = "human", value_name = "FORMAT")]
+    diagnostic_format: DiagFormat,
+
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Compile a JSON Schema file and print the IR as JSON.
-    Compile(CompileArgs),
+    /// Print dialect, node count, and capabilities for a schema.
+    #[command(alias = "info")]
+    Inspect(InspectArgs),
+
+    /// Normalise an OpenAPI 3.0 document (nullable → type arrays).
+    Normalize(NormalizeArgs),
+
+    /// Generate Rust types from a JSON Schema.
+    #[command(alias = "compile", alias = "codegen")]
+    Generate(GenerateArgs),
+
     /// Validate a JSON instance against a schema.
     Validate(ValidateArgs),
-    /// Generate Rust types from a JSON Schema.
-    Codegen(CodegenArgs),
-    /// Print dialect, source URI, and content digest for a schema.
-    Info(InfoArgs),
+
+    /// Time the schema compilation pipeline.
+    Benchmark(BenchmarkArgs),
+
+    /// Print representation strategy and codegen decisions for a schema.
+    Explain(ExplainArgs),
+
+    /// Compare two schemas and report breaking changes.
+    Compatibility(CompatArgs),
+
+    /// Copy local schema files into a vendor directory.
+    Vendor(VendorArgs),
+
+    /// Write a schemaforge.lock.toml pinning local schemas by SHA-256.
+    Lock(LockArgs),
 }
 
+// ── per-command arg structs ────────────────────────────────────────────────────
+
 #[derive(Debug, clap::Args)]
-struct CompileArgs {
+struct InspectArgs {
     /// Path to the JSON Schema file (`.json` or `.yaml`).
     #[arg(value_name = "SCHEMA")]
     schema: PathBuf,
-    /// Pretty-print the IR JSON output.
+}
+
+#[derive(Debug, clap::Args)]
+struct NormalizeArgs {
+    /// Path to the OpenAPI 3.0 document (`.json` or `.yaml`).
+    #[arg(value_name = "SCHEMA")]
+    schema: PathBuf,
+    /// Write output to FILE instead of stdout.
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct GenerateArgs {
+    /// Path to the JSON Schema file (`.json` or `.yaml`).
+    #[arg(value_name = "SCHEMA")]
+    schema: PathBuf,
+    /// Write output to FILE instead of stdout.
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+    /// Pretty-print the IR JSON (only relevant when used as `compile`).
     #[arg(short, long)]
     pretty: bool,
 }
@@ -52,141 +108,434 @@ struct ValidateArgs {
     /// Path to the JSON Schema file.
     #[arg(value_name = "SCHEMA")]
     schema: PathBuf,
-    /// Path to the JSON instance file to validate.
+    /// Path to the JSON instance to validate.
     #[arg(value_name = "INSTANCE")]
     instance: PathBuf,
-    /// Print all validation errors even when valid.
+    /// Print a note even when the instance is valid.
     #[arg(short, long)]
     verbose: bool,
 }
 
 #[derive(Debug, clap::Args)]
-struct CodegenArgs {
-    /// Path to the JSON Schema file.
+struct BenchmarkArgs {
+    /// Path to the JSON Schema file (`.json` or `.yaml`).
     #[arg(value_name = "SCHEMA")]
     schema: PathBuf,
-    /// Output file path (defaults to stdout).
-    #[arg(short, long, value_name = "OUTPUT")]
-    output: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]
-struct InfoArgs {
-    /// Path to the JSON Schema file.
+struct ExplainArgs {
+    /// Path to the JSON Schema file (`.json` or `.yaml`).
     #[arg(value_name = "SCHEMA")]
     schema: PathBuf,
 }
 
-/// Top-level CLI error.
-#[derive(Debug, Error)]
-enum CliError {
-    /// IO error reading a file.
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    /// Compilation failed.
-    #[error("compile error: {0}")]
-    Compile(#[from] CompileError),
-    /// JSON serialisation failed.
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-    /// Schema validation setup failed.
-    #[error("schema error: {0}")]
-    Schema(#[from] schemaforge_jsonschema::SchemaError),
-    /// Code generation failed.
-    #[error("codegen error: {0}")]
-    Codegen(#[from] schemaforge_codegen_rust::CodegenError),
+#[derive(Debug, clap::Args)]
+struct CompatArgs {
+    /// Path to schema A (the baseline / older schema).
+    #[arg(value_name = "SCHEMA_A")]
+    schema_a: PathBuf,
+    /// Path to schema B (the candidate / newer schema).
+    #[arg(value_name = "SCHEMA_B")]
+    schema_b: PathBuf,
 }
+
+#[derive(Debug, clap::Args)]
+struct VendorArgs {
+    /// Path to the JSON Schema file to vendor.
+    #[arg(value_name = "SCHEMA")]
+    schema: PathBuf,
+    /// Directory to vendor into (default: `vendor/`).
+    #[arg(short, long, value_name = "DIR")]
+    vendor_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct LockArgs {
+    /// Path to the JSON Schema file to lock.
+    #[arg(value_name = "SCHEMA")]
+    schema: PathBuf,
+    /// Write lock file to PATH (default: `schemaforge.lock.toml`).
+    #[arg(short, long, value_name = "PATH")]
+    output: Option<PathBuf>,
+}
+
+// ── entry point ────────────────────────────────────────────────────────────────
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(cli) {
+    let fmt = cli.diagnostic_format.clone();
+    match dispatch(cli.command, &fmt) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
+            print_error(&e, &fmt);
+            to_exit_code(&e)
         }
     }
 }
 
-fn run(cli: Cli) -> Result<(), CliError> {
-    match cli.command {
-        Command::Compile(args) => cmd_compile(&args),
-        Command::Validate(args) => cmd_validate(&args),
-        Command::Codegen(args) => cmd_codegen(&args),
-        Command::Info(args) => cmd_info(&args),
+fn dispatch(cmd: Command, fmt: &DiagFormat) -> Result<(), CliError> {
+    match cmd {
+        Command::Inspect(a) => cmd_inspect(&a, fmt),
+        Command::Normalize(a) => cmd_normalize(&a, fmt),
+        Command::Generate(a) => cmd_generate(&a, fmt),
+        Command::Validate(a) => cmd_validate(&a, fmt),
+        Command::Benchmark(a) => cmd_benchmark(&a),
+        Command::Explain(a) => cmd_explain(&a, fmt),
+        Command::Compatibility(a) => cmd_compat(&a, fmt),
+        Command::Vendor(a) => cmd_vendor(&a),
+        Command::Lock(a) => cmd_lock(&a),
     }
 }
 
-fn cmd_compile(args: &CompileArgs) -> Result<(), CliError> {
-    let ir = compile_schema(&args.schema)?;
-    let json_out = if args.pretty {
-        serde_json::to_string_pretty(&ir)?
-    } else {
-        serde_json::to_string(&ir)?
-    };
-    println!("{json_out}");
+// ── inspect ────────────────────────────────────────────────────────────────────
+
+fn cmd_inspect(args: &InspectArgs, fmt: &DiagFormat) -> Result<(), CliError> {
+    let ir = load_schema(&args.schema)?;
+    let result = schemaforge_compiler::inspect_ir(&ir);
+    match fmt {
+        DiagFormat::Json | DiagFormat::Sarif => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        DiagFormat::Human => {
+            println!("dialect:    {}", result.dialect_uri);
+            println!("source:     {}", result.source_uri);
+            println!("digest:     {}", result.source_digest);
+            println!("nodes:      {}", result.node_count);
+            println!("caps:       {}", result.capabilities.join(", "));
+        }
+    }
     Ok(())
 }
 
-fn cmd_validate(args: &ValidateArgs) -> Result<(), CliError> {
+// ── normalize ──────────────────────────────────────────────────────────────────
+
+fn cmd_normalize(args: &NormalizeArgs, fmt: &DiagFormat) -> Result<(), CliError> {
+    let text = read_file(&args.schema)?;
+    let ext = file_ext(&args.schema);
+    let normalized = build_normalized_map(ext, &text)?;
+    let out = match fmt {
+        DiagFormat::Json | DiagFormat::Sarif => serde_json::to_string(&normalized)?,
+        DiagFormat::Human => serde_json::to_string_pretty(&normalized)?,
+    };
+    write_or_print(args.output.as_deref(), &out)
+}
+
+fn build_normalized_map(ext: &str, text: &str) -> Result<serde_json::Value, CliError> {
+    let doc = if ext == "yaml" || ext == "yml" {
+        schemaforge_openapi::OpenApiDoc::from_yaml(text)?
+    } else {
+        schemaforge_openapi::OpenApiDoc::from_json(text)?
+    };
+    let mut map = serde_json::Map::new();
+    for (name, entry) in doc.component_schemas() {
+        map.insert(name, entry.schema);
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
+// ── generate ───────────────────────────────────────────────────────────────────
+
+fn cmd_generate(args: &GenerateArgs, _fmt: &DiagFormat) -> Result<(), CliError> {
+    let ir = load_schema(&args.schema)?;
+    let opts = schemaforge_codegen_rust::CodegenOptions {
+        module_doc: Some(format!("Generated from {}", args.schema.display())),
+        ..schemaforge_codegen_rust::CodegenOptions::default()
+    };
+    let code = schemaforge_codegen_rust::generate(&ir, &opts)?;
+    write_or_print(args.output.as_deref(), &code)
+}
+
+// ── validate ───────────────────────────────────────────────────────────────────
+
+fn cmd_validate(args: &ValidateArgs, fmt: &DiagFormat) -> Result<(), CliError> {
     let schema_text = read_file(&args.schema)?;
     let instance_text = read_file(&args.instance)?;
-    let schema_val: serde_json::Value = serde_json::from_str(&schema_text)?;
-    let instance_val: serde_json::Value = serde_json::from_str(&instance_text)?;
-    let validator = Validator::new(&schema_val, ValidationOptions::default())?;
+    let schema_val: serde_json::Value = parse_json(&schema_text)?;
+    let instance_val: serde_json::Value = parse_json(&instance_text)?;
+    let validator = schemaforge_jsonschema::Validator::new(
+        &schema_val,
+        schemaforge_jsonschema::ValidationOptions::default(),
+    )?;
     let output = validator.validate(&instance_val);
+    report_validation(&output, fmt, args.verbose)
+}
+
+fn report_validation(
+    output: &schemaforge_jsonschema::ValidationOutput,
+    fmt: &DiagFormat,
+    verbose: bool,
+) -> Result<(), CliError> {
     if output.is_valid() {
         println!("valid");
-    } else {
-        eprintln!("invalid");
-        for err in &output.errors {
-            eprintln!("  - {} (at {})", err.message, err.instance_path);
+        if verbose {
+            println!("(no errors)");
         }
         return Ok(());
     }
-    if args.verbose {
-        println!("(no errors)");
+    report_errors(&output.errors, fmt);
+    Err(CliError::ValidationFailed)
+}
+
+fn report_errors(errors: &[schemaforge_jsonschema::ValidationError], fmt: &DiagFormat) {
+    match fmt {
+        DiagFormat::Json | DiagFormat::Sarif => report_errors_json(errors),
+        DiagFormat::Human => report_errors_human(errors),
+    }
+}
+
+fn error_to_json(e: &schemaforge_jsonschema::ValidationError) -> serde_json::Value {
+    serde_json::json!({"path": e.instance_path, "message": e.message})
+}
+
+fn report_errors_json(errors: &[schemaforge_jsonschema::ValidationError]) {
+    let errs: Vec<_> = errors.iter().map(error_to_json).collect();
+    let v = serde_json::json!({"valid": false, "errors": errs});
+    println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+}
+
+fn report_errors_human(errors: &[schemaforge_jsonschema::ValidationError]) {
+    eprintln!("invalid");
+    for err in errors {
+        eprintln!("  - {} (at {})", err.message, err.instance_path);
+    }
+}
+
+// ── benchmark ──────────────────────────────────────────────────────────────────
+
+fn cmd_benchmark(args: &BenchmarkArgs) -> Result<(), CliError> {
+    let text = read_file(&args.schema)?;
+    let uri = file_uri(&args.schema);
+    let ext = file_ext(&args.schema);
+    let start = std::time::Instant::now();
+    let ir = compile_text(&mut Compiler::new(), &uri, ext, &text)?;
+    let elapsed = start.elapsed();
+    let info = schemaforge_compiler::inspect_ir(&ir);
+    println!("elapsed_ms: {}", elapsed.as_millis());
+    println!("nodes:      {}", info.node_count);
+    println!("dialect:    {}", info.dialect_uri);
+    Ok(())
+}
+
+// ── explain ────────────────────────────────────────────────────────────────────
+
+fn cmd_explain(args: &ExplainArgs, fmt: &DiagFormat) -> Result<(), CliError> {
+    let ir = load_schema(&args.schema)?;
+    let result = schemaforge_compiler::explain_ir(&ir);
+    match fmt {
+        DiagFormat::Json | DiagFormat::Sarif => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        DiagFormat::Human => print_explain_human(&result),
     }
     Ok(())
 }
 
-fn cmd_codegen(args: &CodegenArgs) -> Result<(), CliError> {
-    let ir = compile_schema(&args.schema)?;
-    let code = schemaforge_codegen_rust::generate(
-        &ir,
-        &schemaforge_codegen_rust::CodegenOptions::default(),
-    )?;
-    match &args.output {
-        Some(path) => std::fs::write(path, &code)?,
-        None => print!("{code}"),
+fn print_explain_human(r: &schemaforge_compiler::ExplainResult) {
+    println!("dialect:     {}", r.dialect_uri);
+    println!("strategy:    {}", r.type_strategy);
+    println!("nullable:    {}", r.nullable);
+    println!("properties:  {}", r.property_count);
+    println!("combinators: {}", r.combinator_count);
+    if !r.codegen_hints.is_empty() {
+        println!("hints:");
+        for hint in &r.codegen_hints {
+            println!("  - {hint}");
+        }
     }
+}
+
+// ── compatibility ──────────────────────────────────────────────────────────────
+
+fn cmd_compat(args: &CompatArgs, fmt: &DiagFormat) -> Result<(), CliError> {
+    let ir_a = load_schema(&args.schema_a)?;
+    let ir_b = load_schema(&args.schema_b)?;
+    let breaks = find_breaking_changes(&ir_a.root, &ir_b.root);
+    report_breaking_changes(&breaks, fmt)
+}
+
+fn find_breaking_changes(
+    a: &schemaforge_ir::SchemaNode,
+    b: &schemaforge_ir::SchemaNode,
+) -> Vec<String> {
+    let mut changes = Vec::new();
+    check_scalar_type_removals(a, b, &mut changes);
+    check_compound_type_removals(a, b, &mut changes);
+    check_required_additions(a, b, &mut changes);
+    check_enum_restrictions(a, b, &mut changes);
+    changes
+}
+
+fn check_scalar_type_removals(
+    a: &schemaforge_ir::SchemaNode,
+    b: &schemaforge_ir::SchemaNode,
+    changes: &mut Vec<String>,
+) {
+    if a.types.null && !b.types.null {
+        changes.push("removed null type".to_owned());
+    }
+    if a.types.string && !b.types.string {
+        changes.push("removed string type".to_owned());
+    }
+    if a.types.number && !b.types.number {
+        changes.push("removed number type".to_owned());
+    }
+}
+
+fn check_compound_type_removals(
+    a: &schemaforge_ir::SchemaNode,
+    b: &schemaforge_ir::SchemaNode,
+    changes: &mut Vec<String>,
+) {
+    if a.types.boolean && !b.types.boolean {
+        changes.push("removed boolean type".to_owned());
+    }
+    if a.types.array && !b.types.array {
+        changes.push("removed array type".to_owned());
+    }
+    if a.types.object && !b.types.object {
+        changes.push("removed object type".to_owned());
+    }
+}
+
+fn check_required_additions(
+    a: &schemaforge_ir::SchemaNode,
+    b: &schemaforge_ir::SchemaNode,
+    changes: &mut Vec<String>,
+) {
+    for req in &b.object.required {
+        if !a.object.required.contains(req) {
+            changes.push(format!("added required property `{req}`"));
+        }
+    }
+}
+
+fn check_enum_restrictions(
+    a: &schemaforge_ir::SchemaNode,
+    b: &schemaforge_ir::SchemaNode,
+    changes: &mut Vec<String>,
+) {
+    if b.enum_values.is_empty() || a.enum_values.is_empty() {
+        return;
+    }
+    for val in &a.enum_values {
+        if !b.enum_values.contains(val) {
+            changes.push(format!("removed enum value `{val}`"));
+        }
+    }
+}
+
+fn report_breaking_changes(breaks: &[String], fmt: &DiagFormat) -> Result<(), CliError> {
+    if breaks.is_empty() {
+        println!("compatible: no breaking changes detected");
+        return Ok(());
+    }
+    print_breaking_changes(breaks, fmt);
+    Err(CliError::ValidationFailed)
+}
+
+fn print_breaking_changes(breaks: &[String], fmt: &DiagFormat) {
+    match fmt {
+        DiagFormat::Json | DiagFormat::Sarif => {
+            let v = serde_json::json!({"breaking_changes": breaks});
+            println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+        }
+        DiagFormat::Human => {
+            eprintln!("breaking changes detected:");
+            for b in breaks {
+                eprintln!("  - {b}");
+            }
+        }
+    }
+}
+
+// ── vendor ─────────────────────────────────────────────────────────────────────
+
+fn cmd_vendor(args: &VendorArgs) -> Result<(), CliError> {
+    let dir = args
+        .vendor_dir
+        .as_deref()
+        .unwrap_or_else(|| Path::new("vendor"));
+    std::fs::create_dir_all(dir)?;
+    let filename = args
+        .schema
+        .file_name()
+        .ok_or_else(|| CliError::Internal("schema path has no filename".to_owned()))?;
+    let dest = dir.join(filename);
+    std::fs::copy(&args.schema, &dest)?;
+    println!("vendored: {}", dest.display());
     Ok(())
 }
 
-fn cmd_info(args: &InfoArgs) -> Result<(), CliError> {
-    let ir = compile_schema(&args.schema)?;
-    println!("source_uri:     {}", ir.source_uri);
-    println!("dialect:        {}", ir.dialect_uri);
-    println!("source_digest:  {}", ir.source_digest);
+// ── lock ───────────────────────────────────────────────────────────────────────
+
+fn cmd_lock(args: &LockArgs) -> Result<(), CliError> {
+    let bytes = std::fs::read(&args.schema)?;
+    let digest = sha256_hex(&bytes);
+    let uri = file_uri(&args.schema);
+    let entry = schemaforge_compiler::LockEntry::new(uri, digest);
+    let toml = schemaforge_compiler::format_lock_toml(&[entry]);
+    let out_path = args
+        .output
+        .as_deref()
+        .unwrap_or_else(|| Path::new("schemaforge.lock.toml"));
+    std::fs::write(out_path, &toml)?;
+    println!("wrote {}", out_path.display());
     Ok(())
 }
 
-fn compile_schema(path: &PathBuf) -> Result<schemaforge_ir::SchemaIr, CliError> {
-    let uri = format!("file://{}", path.display());
+// ── shared helpers ─────────────────────────────────────────────────────────────
+
+fn load_schema(path: &Path) -> Result<schemaforge_ir::SchemaIr, CliError> {
     let text = read_file(path)?;
-    let mut compiler = Compiler::new();
-    let ext = path
-        .extension()
-        .and_then(std::ffi::OsStr::to_str)
-        .unwrap_or("");
-    let ir = if ext == "yaml" || ext == "yml" {
-        compiler.compile_yaml(&uri, &text)?
-    } else {
-        compiler.compile_json(&uri, &text)?
-    };
-    Ok(ir)
+    let uri = file_uri(path);
+    let ext = file_ext(path);
+    compile_text(&mut Compiler::new(), &uri, ext, &text)
 }
 
-fn read_file(path: &PathBuf) -> Result<String, CliError> {
+fn compile_text(
+    compiler: &mut Compiler,
+    uri: &str,
+    ext: &str,
+    text: &str,
+) -> Result<schemaforge_ir::SchemaIr, CliError> {
+    if ext == "yaml" || ext == "yml" {
+        compiler.compile_yaml(uri, text).map_err(from_compile)
+    } else {
+        compiler.compile_json(uri, text).map_err(from_compile)
+    }
+}
+
+fn read_file(path: &Path) -> Result<String, CliError> {
     std::fs::read_to_string(path).map_err(CliError::Io)
+}
+
+fn file_uri(path: &Path) -> String {
+    format!("file://{}", path.display())
+}
+
+fn file_ext(path: &Path) -> &str {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("")
+}
+
+fn write_or_print(output: Option<&Path>, content: &str) -> Result<(), CliError> {
+    match output {
+        Some(path) => std::fs::write(path, content).map_err(CliError::Io),
+        None => {
+            print!("{content}");
+            Ok(())
+        }
+    }
+}
+
+fn parse_json(text: &str) -> Result<serde_json::Value, CliError> {
+    serde_json::from_str(text).map_err(|e| CliError::Parse(e.to_string()))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    format!("{:x}", h.finalize())
 }

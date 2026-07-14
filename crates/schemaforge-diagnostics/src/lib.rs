@@ -214,6 +214,50 @@ impl IntoIterator for DiagnosticBag {
     }
 }
 
+// ── SARIF export ──────────────────────────────────────────────────────────────
+
+/// Export a [`DiagnosticBag`] as a minimal SARIF 2.1.0 JSON value.
+///
+/// The SARIF document has one run containing one result per diagnostic.
+#[must_use]
+pub fn to_sarif(bag: &DiagnosticBag) -> serde_json::Value {
+    let results: Vec<serde_json::Value> = bag.iter().map(sarif_result).collect();
+    serde_json::json!({
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "schemaforge",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "informationUri": "https://github.com/yu-iskw/rust-projet-template"
+                }
+            },
+            "results": results
+        }]
+    })
+}
+
+fn sarif_result(d: &Diagnostic) -> serde_json::Value {
+    let level = sarif_level(d.severity);
+    let rule_id = d.code.as_deref().unwrap_or("SF0000");
+    serde_json::json!({
+        "ruleId": rule_id,
+        "level": level,
+        "message": {"text": d.message}
+    })
+}
+
+const fn sarif_level(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info | Severity::Hint => "note",
+    }
+}
+
+// ── human-readable render ─────────────────────────────────────────────────────
+
 fn render_diagnostic(d: &Diagnostic, map: &SourceMap) -> String {
     let mut out = format!("{}: {}", d.severity, d.message);
     for label in &d.labels {
@@ -299,5 +343,26 @@ mod tests {
         bag.error(span, "e1");
         bag.warning(span, "w1");
         assert_eq!((&bag).into_iter().count(), 2);
+    }
+
+    #[test]
+    fn sarif_export_structure() {
+        let (_, span) = make_span();
+        let mut bag = DiagnosticBag::new();
+        bag.error(span, "bad keyword");
+        let sarif = to_sarif(&bag);
+        assert_eq!(sarif["version"], "2.1.0");
+        let results = &sarif["runs"][0]["results"];
+        assert_eq!(results[0]["level"], "error");
+        assert_eq!(results[0]["message"]["text"], "bad keyword");
+    }
+
+    #[test]
+    fn sarif_warning_level() {
+        let (_, span) = make_span();
+        let mut bag = DiagnosticBag::new();
+        bag.warning(span, "deprecated");
+        let sarif = to_sarif(&bag);
+        assert_eq!(sarif["runs"][0]["results"][0]["level"], "warning");
     }
 }

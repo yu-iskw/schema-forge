@@ -13,7 +13,9 @@ description = "URI resolution and $ref handling for Schemaforge (offline by defa
 [dependencies]
 schemaforge-source.workspace = true
 schemaforge-diagnostics.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true
 

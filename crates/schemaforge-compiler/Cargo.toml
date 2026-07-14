@@ -17,6 +17,7 @@ schemaforge-dialect.workspace = true
 schemaforge-resolver.workspace = true
 schemaforge-ir.workspace = true
 schemaforge-jsonschema.workspace = true
+schemaforge-analysis.workspace = true
 schemaforge-runtime.workspace = true
 serde.workspace = true
 serde_json.workspace = true
