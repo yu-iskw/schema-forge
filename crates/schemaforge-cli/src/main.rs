@@ -20,8 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use schemaforge_compiler::Compiler;
-use sha2::{Digest, Sha256};
+use schemaforge_compiler::{Compiler, sha256_hex};
 
 use crate::error::{CliError, DiagFormat, from_compile, print_error, to_exit_code};
 
@@ -459,10 +458,4 @@ fn write_or_print(output: Option<&Path>, content: &str) -> Result<(), CliError> 
 
 fn parse_json(text: &str) -> Result<serde_json::Value, CliError> {
     serde_json::from_str(text).map_err(|e| CliError::Parse(e.to_string()))
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    format!("{:x}", h.finalize())
 }

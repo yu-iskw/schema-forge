@@ -5,21 +5,24 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 /// A single locked resource entry: URI and SHA-256 digest pair.
+///
+/// The field name `digest` matches the resolver's [`schemaforge_resolver::LockEntry`]
+/// so the two lock formats share the same key names.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockEntry {
     /// Resource URI (e.g. `file:///path/to/schema.json`).
     pub uri: String,
     /// SHA-256 hex digest of the resource bytes at lock time.
-    pub sha256: String,
+    pub digest: String,
 }
 
 impl LockEntry {
     /// Create a new lock entry.
     #[must_use]
-    pub fn new(uri: impl Into<String>, sha256: impl Into<String>) -> Self {
+    pub fn new(uri: impl Into<String>, digest: impl Into<String>) -> Self {
         Self {
             uri: uri.into(),
-            sha256: sha256.into(),
+            digest: digest.into(),
         }
     }
 }
@@ -34,8 +37,8 @@ pub fn format_lock_toml(entries: &[LockEntry]) -> String {
     for entry in entries {
         write!(
             out,
-            "[[resource]]\nuri    = \"{}\"\nsha256 = \"{}\"\n\n",
-            entry.uri, entry.sha256
+            "[[resource]]\nuri    = \"{}\"\ndigest = \"{}\"\n\n",
+            entry.uri, entry.digest
         )
         .unwrap_or(());
     }
@@ -50,7 +53,7 @@ mod tests {
     fn lock_entry_roundtrip() {
         let e = LockEntry::new("file:///schema.json", "abc123");
         assert_eq!(e.uri, "file:///schema.json");
-        assert_eq!(e.sha256, "abc123");
+        assert_eq!(e.digest, "abc123");
     }
 
     #[test]
@@ -62,6 +65,6 @@ mod tests {
         let toml = format_lock_toml(&entries);
         assert!(toml.contains("[[resource]]"));
         assert!(toml.contains(r#"uri    = "file:///a.json""#));
-        assert!(toml.contains(r#"sha256 = "bbb""#));
+        assert!(toml.contains(r#"digest = "bbb""#));
     }
 }

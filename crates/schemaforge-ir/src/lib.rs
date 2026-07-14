@@ -91,10 +91,12 @@ impl TypeSet {
     }
 
     /// Return the JSON Schema type names present in this set, in a stable
-    /// order: object, array, string, number, boolean, null.
+    /// order: object, array, string, number, integer, boolean, null.
     ///
-    /// `integer` is intentionally omitted because it is a subset of `number`
-    /// and code generators treat them together.
+    /// `integer` is included whenever its flag is set.  When both `number` and
+    /// `integer` are set (e.g. because the schema declared `"type": "number"`,
+    /// which implies integer), both names appear so callers can distinguish
+    /// schemas that explicitly include integer types.
     #[must_use]
     pub fn type_names(self) -> Vec<&'static str> {
         let mut names = Vec::new();
@@ -109,6 +111,9 @@ impl TypeSet {
         }
         if self.number {
             names.push("number");
+        }
+        if self.integer {
+            names.push("integer");
         }
         if self.boolean {
             names.push("boolean");
@@ -427,7 +432,19 @@ mod tests {
         let ts = TypeSet::from_json(&json!("number"));
         assert!(ts.number);
         assert!(ts.integer);
-        assert_eq!(ts.type_names(), vec!["number"]);
+        // Both "number" and "integer" are present because number implies integer.
+        assert_eq!(ts.type_names(), vec!["number", "integer"]);
+    }
+
+    #[test]
+    fn type_set_integer_only_appears_in_names() {
+        // When only "integer" is declared (not "number"), type_names must include
+        // "integer" so callers can tell it apart from a plain number schema.
+        let ts = TypeSet::from_json(&json!("integer"));
+        assert!(ts.integer);
+        assert!(!ts.number);
+        assert!(ts.type_names().contains(&"integer"));
+        assert!(!ts.type_names().contains(&"number"));
     }
 
     #[test]

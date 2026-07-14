@@ -310,13 +310,18 @@ pub(crate) fn validate_schema(
     }
     ctx.depth.set(depth + 1);
     let out = match schema {
+        Value::Bool(true) => ValidationOutput::ok(),
         Value::Bool(false) => ValidationOutput::fail(ValidationError::new(
             path,
             path,
             "schema is `false` - no instance is valid",
         )),
         Value::Object(obj) => validate_object_schema(obj, instance, path, ctx),
-        _ => ValidationOutput::ok(),
+        _ => ValidationOutput::fail(ValidationError::new(
+            path,
+            path,
+            "invalid schema: a JSON Schema must be a boolean or an object",
+        )),
     };
     ctx.depth.set(depth);
     out
@@ -704,6 +709,38 @@ mod tests {
         let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
         assert!(v.validate(&json!("hello")).is_valid());
         assert!(!v.validate(&json!("Hello")).is_valid());
+    }
+
+    #[test]
+    fn non_schema_number_fails_closed() {
+        // A schema that is a JSON number (not bool or object) must reject every
+        // instance rather than silently accepting them.
+        let schema = serde_json::json!(42);
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        assert!(
+            !v.validate(&serde_json::json!("anything")).is_valid(),
+            "a numeric schema must not validate any instance"
+        );
+    }
+
+    #[test]
+    fn non_schema_string_fails_closed() {
+        let schema = serde_json::json!("not-a-schema");
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        assert!(
+            !v.validate(&serde_json::json!(null)).is_valid(),
+            "a string schema must not validate any instance"
+        );
+    }
+
+    #[test]
+    fn non_schema_array_fails_closed() {
+        let schema = serde_json::json!([1, 2, 3]);
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        assert!(
+            !v.validate(&serde_json::json!({})).is_valid(),
+            "an array schema must not validate any instance"
+        );
     }
 
     #[test]

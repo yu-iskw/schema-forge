@@ -675,7 +675,6 @@ dependencies = [
  "schemaforge-jsonschema",
  "schemaforge-openapi",
  "serde_json",
- "sha2",
  "thiserror",
 ]
 
@@ -698,7 +697,6 @@ dependencies = [
  "schemaforge-analysis",
  "schemaforge-dialect",
  "schemaforge-ir",
- "schemaforge-source",
  "serde",
  "serde-saphyr",
  "serde_json",

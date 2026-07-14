@@ -19,15 +19,12 @@ pub use explain::{ExplainResult, explain_ir};
 pub use inspect::{InspectResult, inspect_ir};
 pub use lock::{LockEntry, format_lock_toml};
 
-use std::sync::Arc;
-
 use indexmap::IndexMap;
 use schemaforge_dialect::detect;
 use schemaforge_ir::{
     ArrayConstraints, NumericBound, NumericConstraints, ObjectConstraints, SchemaIr, SchemaNode,
     StringConstraints, TypeSet,
 };
-use schemaforge_source::SourceMap;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -64,6 +61,16 @@ pub enum CompileError {
         /// The URI that forms the cycle.
         uri: String,
     },
+    /// The schema value is neither a JSON boolean nor a JSON object.
+    ///
+    /// JSON Schema allows only `true`, `false`, and object schemas.  Any other
+    /// JSON value (number, string, array, null) is invalid and rejected
+    /// fail-closed rather than treated as an open schema.
+    #[error("invalid schema: must be a boolean or object, got `{kind}`")]
+    InvalidSchemaKind {
+        /// The JSON type name of the unexpected value.
+        kind: String,
+    },
 }
 
 /// Options that control the compiler's behaviour.
@@ -79,7 +86,6 @@ pub struct CompilerOptions {
 
 /// The Schemaforge compiler: transforms source text into an IR.
 pub struct Compiler {
-    source_map: SourceMap,
     /// Fallback document URI (from [`CompilerOptions::base_uri`]).
     base_uri: String,
 }
@@ -95,7 +101,6 @@ impl Compiler {
     #[must_use]
     pub fn with_options(options: &CompilerOptions) -> Self {
         Self {
-            source_map: SourceMap::new(),
             base_uri: options.base_uri.clone(),
         }
     }
@@ -114,7 +119,6 @@ impl Compiler {
         let value: Value =
             serde_json::from_str(source).map_err(|e| CompileError::JsonParse(e.to_string()))?;
         let digest = sha256_hex(source.as_bytes());
-        self.source_map.add(&effective_uri, Arc::from(source));
         compile_value(&effective_uri, &value, &digest)
     }
 
@@ -132,26 +136,16 @@ impl Compiler {
         let value: Value =
             serde_saphyr::from_str(source).map_err(|e| CompileError::YamlParse(e.to_string()))?;
         let digest = sha256_hex(source.as_bytes());
-        self.source_map.add(&effective_uri, Arc::from(source));
         compile_value(&effective_uri, &value, &digest)
     }
 
     /// Return `uri` when non-empty, otherwise fall back to `self.base_uri`.
-    ///
-    /// Returns an owned `String` to avoid holding a borrow on `self` across
-    /// the mutable `source_map.add` call.
     fn resolve_uri(&self, uri: &str) -> String {
         if uri.is_empty() {
             self.base_uri.clone()
         } else {
             uri.to_owned()
         }
-    }
-
-    /// Access the source map populated during compilation.
-    #[must_use]
-    pub const fn source_map(&self) -> &SourceMap {
-        &self.source_map
     }
 }
 
@@ -187,12 +181,31 @@ impl<'a> LowerCtx<'a> {
 }
 
 /// Lower a JSON Schema [`Value`] into an IR [`SchemaNode`].
+///
+/// JSON Schema allows only `true`, `false`, and object values as schemas.
+/// Any other JSON value is rejected fail-closed with
+/// [`CompileError::InvalidSchemaKind`] rather than silently treated as an
+/// open schema.
 fn lower_schema(value: &Value, ctx: &mut LowerCtx<'_>) -> Result<SchemaNode, CompileError> {
     match value {
         Value::Bool(true) => Ok(SchemaNode::boolean_schema(true)),
         Value::Bool(false) => Ok(SchemaNode::boolean_schema(false)),
         Value::Object(obj) => lower_object_schema(obj, ctx),
-        _ => Ok(SchemaNode::any()),
+        other => Err(CompileError::InvalidSchemaKind {
+            kind: json_type_name(other).to_owned(),
+        }),
+    }
+}
+
+/// Return the JSON type name of `value` for use in error messages.
+const fn json_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }
 
@@ -452,7 +465,8 @@ pub(crate) fn make_test_ir(root: SchemaNode) -> SchemaIr {
 }
 
 /// Compute the SHA-256 hex digest of `bytes`.
-fn sha256_hex(bytes: &[u8]) -> String {
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
@@ -548,6 +562,46 @@ mod tests {
         assert!(
             matches!(result, Err(CompileError::CyclicRef { .. })),
             "expected CyclicRef error but got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn compile_non_schema_number_returns_error() {
+        let mut c = Compiler::new();
+        let result = c.compile_json("test://bad.json", "42");
+        assert!(
+            matches!(result, Err(CompileError::InvalidSchemaKind { .. })),
+            "expected InvalidSchemaKind for number schema, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn compile_non_schema_string_returns_error() {
+        let mut c = Compiler::new();
+        let result = c.compile_json("test://bad.json", r#""just a string""#);
+        assert!(
+            matches!(result, Err(CompileError::InvalidSchemaKind { .. })),
+            "expected InvalidSchemaKind for string schema, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn compile_non_schema_array_returns_error() {
+        let mut c = Compiler::new();
+        let result = c.compile_json("test://bad.json", "[]");
+        assert!(
+            matches!(result, Err(CompileError::InvalidSchemaKind { .. })),
+            "expected InvalidSchemaKind for array schema, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn compile_non_schema_null_returns_error() {
+        let mut c = Compiler::new();
+        let result = c.compile_json("test://bad.json", "null");
+        assert!(
+            matches!(result, Err(CompileError::InvalidSchemaKind { .. })),
+            "expected InvalidSchemaKind for null schema, got: {result:?}"
         );
     }
 

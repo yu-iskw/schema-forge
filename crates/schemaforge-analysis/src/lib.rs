@@ -280,6 +280,7 @@ fn check_type_removals(a: &SchemaNode, b: &SchemaNode, changes: &mut Vec<String>
         (a.types.null, b.types.null, "null"),
         (a.types.string, b.types.string, "string"),
         (a.types.number, b.types.number, "number"),
+        (a.types.integer, b.types.integer, "integer"),
         (a.types.boolean, b.types.boolean, "boolean"),
         (a.types.array, b.types.array, "array"),
         (a.types.object, b.types.object, "object"),
@@ -465,6 +466,25 @@ mod tests {
         b.object.required.push("email".to_owned());
         let changes = find_breaking_changes(&a, &b);
         assert!(changes.iter().any(|c| c.contains("email")));
+    }
+
+    #[test]
+    fn breaking_changes_integer_removal() {
+        // Removing integer type is a breaking change: callers that passed
+        // integer values would now fail validation.
+        let a = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("integer")),
+            ..SchemaNode::default()
+        };
+        let b = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            ..SchemaNode::default()
+        };
+        let changes = find_breaking_changes(&a, &b);
+        assert!(
+            changes.iter().any(|c| c.contains("integer")),
+            "expected integer removal in changes: {changes:?}"
+        );
     }
 
     #[test]

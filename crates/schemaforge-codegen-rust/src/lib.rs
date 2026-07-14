@@ -411,7 +411,8 @@ fn emit_required_bitset_comment(
         return Ok(());
     }
     let bitset = compute_required_bitset(required, all_props);
-    let field_list = required.join(", ");
+    let field_list: Vec<String> = required.iter().map(|s| sanitize_for_comment(s)).collect();
+    let field_list = field_list.join(", ");
     writeln!(
         buf,
         "// Required-field bitset: {bitset:#066b} (required: {field_list})"
@@ -431,11 +432,11 @@ fn compute_required_bitset(required: &[String], all_props: &[&str]) -> u64 {
 
 fn emit_doc_comment(node: &SchemaNode, buf: &mut String) -> Result<(), CodegenError> {
     if let Some(title) = &node.title {
-        writeln!(buf, "/// {title}")?;
+        writeln!(buf, "/// {}", sanitize_for_comment(title))?;
     }
     if let Some(desc) = &node.description {
         for line in desc.lines() {
-            writeln!(buf, "/// {line}")?;
+            writeln!(buf, "/// {}", sanitize_for_comment(line))?;
         }
     }
     Ok(())
@@ -498,6 +499,81 @@ fn to_pascal_case(s: &str) -> String {
 
 // ── Identifier sanitization and string escaping ──────────────────────────────
 
+/// Replace newlines, carriage-returns, and other ASCII control characters in
+/// `s` with a single space so the result is safe to embed in a Rust line
+/// comment (`//` or `///`) without prematurely terminating the comment or
+/// injecting code on the next source line.
+fn sanitize_for_comment(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c == '\n' || c == '\r' || c.is_ascii_control() {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Return `true` when `s` is a Rust strict keyword or reserved word that
+/// cannot appear as a bare identifier in source.
+fn is_rust_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "as" | "async"
+            | "await"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "try"
+            | "type"
+            | "union"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "abstract"
+            | "become"
+            | "box"
+            | "do"
+            | "final"
+            | "macro"
+            | "override"
+            | "priv"
+            | "typeof"
+            | "unsized"
+            | "virtual"
+            | "yield"
+    )
+}
+
 /// Escape a string for safe embedding inside a Rust string literal used in
 /// `#[serde(rename = "...")]`.
 ///
@@ -541,11 +617,15 @@ fn sanitize_identifier_chars(s: &str) -> String {
 /// Derive a safe `snake_case` Rust field identifier from a JSON property key.
 ///
 /// Falls back to `field_{idx}` when no safe characters survive sanitization.
+/// If the resulting identifier is a Rust keyword, it is wrapped as a raw
+/// identifier (`r#keyword`) so it remains a valid field name.
 fn sanitize_field_name(key: &str, idx: usize) -> String {
     let snake = to_snake_case(key);
     let safe = sanitize_identifier_chars(&snake);
     if safe.is_empty() {
         format!("field_{idx}")
+    } else if is_rust_keyword(&safe) {
+        format!("r#{safe}")
     } else {
         safe
     }
@@ -554,11 +634,15 @@ fn sanitize_field_name(key: &str, idx: usize) -> String {
 /// Derive a safe `PascalCase` Rust type identifier from a schema key.
 ///
 /// Falls back to `Type{idx}` when no safe characters survive sanitization.
+/// If the resulting identifier is a Rust keyword, a `_` suffix is appended
+/// (raw-identifier syntax is not conventional for type names).
 fn sanitize_type_name(key: &str, idx: usize) -> String {
     let pascal = to_pascal_case(key);
     let safe = sanitize_identifier_chars(&pascal);
     if safe.is_empty() {
         format!("Type{idx}")
+    } else if is_rust_keyword(&safe) {
+        format!("{safe}_")
     } else {
         safe
     }
@@ -802,6 +886,106 @@ mod tests {
             code.contains(r#"serde(rename = "field\""#),
             "expected escaped serde rename attribute in:\n{code}"
         );
+    }
+
+    #[test]
+    fn doc_comment_title_with_newline_does_not_inject_code() {
+        // A title containing a literal newline must NOT produce a multi-line
+        // comment that causes the second line to appear as raw Rust source.
+        // Use a struct (object with properties) so that emit_doc_comment is
+        // actually called.
+        let prop = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            ..SchemaNode::default()
+        };
+        let mut props = indexmap::IndexMap::new();
+        props.insert("name".to_owned(), prop);
+        let root = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            title: Some("Evil\n; pub fn injected() {} //".to_owned()),
+            properties: props,
+            ..SchemaNode::default()
+        };
+        let ir = SchemaIr::new(root, "", "abc", "test://");
+        let code = generate(&ir, &CodegenOptions::default()).unwrap();
+        let injected = code
+            .lines()
+            .any(|l| l.trim_start().starts_with("pub fn injected"));
+        assert!(!injected, "newline in title injected code:\n{code}");
+        // The title must still appear in the comment, but with newlines replaced.
+        assert!(
+            code.contains("Evil"),
+            "title content must be present:\n{code}"
+        );
+    }
+
+    #[test]
+    fn field_name_type_keyword_gets_raw_identifier() {
+        // A JSON property named "type" must produce `r#type` as the field name
+        // so the generated struct compiles as valid Rust.
+        let prop = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            ..SchemaNode::default()
+        };
+        let mut props = indexmap::IndexMap::new();
+        props.insert("type".to_owned(), prop);
+        let root = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            properties: props,
+            ..SchemaNode::default()
+        };
+        let ir = SchemaIr::new(root, "", "abc", "test://");
+        let code = generate(&ir, &CodegenOptions::default()).unwrap();
+        assert!(
+            code.contains("r#type"),
+            "expected raw identifier r#type in:\n{code}"
+        );
+    }
+
+    #[test]
+    fn field_name_self_keyword_gets_raw_identifier() {
+        let prop = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            ..SchemaNode::default()
+        };
+        let mut props = indexmap::IndexMap::new();
+        props.insert("self".to_owned(), prop);
+        let root = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            properties: props,
+            ..SchemaNode::default()
+        };
+        let ir = SchemaIr::new(root, "", "abc", "test://");
+        let code = generate(&ir, &CodegenOptions::default()).unwrap();
+        assert!(
+            code.contains("r#self"),
+            "expected raw identifier r#self in:\n{code}"
+        );
+    }
+
+    #[test]
+    fn reserved_keywords_produce_valid_field_names() {
+        // Check a sample of reserved keywords to ensure they are all wrapped.
+        let keywords = ["ref", "match", "crate", "async", "fn", "let", "pub"];
+        for kw in keywords {
+            let prop = SchemaNode {
+                types: TypeSet::from_json(&serde_json::json!("string")),
+                ..SchemaNode::default()
+            };
+            let mut props = indexmap::IndexMap::new();
+            props.insert(kw.to_owned(), prop);
+            let root = SchemaNode {
+                types: TypeSet::from_json(&serde_json::json!("object")),
+                properties: props,
+                ..SchemaNode::default()
+            };
+            let ir = SchemaIr::new(root, "", "abc", "test://");
+            let code = generate(&ir, &CodegenOptions::default()).unwrap();
+            assert!(
+                code.contains(&format!("r#{kw}")),
+                "expected r#{kw} for keyword property `{kw}` in:\n{code}"
+            );
+        }
     }
 
     #[test]
