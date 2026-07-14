@@ -19,7 +19,7 @@ pub(crate) mod unevaluated;
 pub(crate) mod validation;
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
 use schemaforge_formats::FormatRegistry;
@@ -279,8 +279,9 @@ fn register_pattern(
 /// Return the set of property names explicitly declared in `properties`.
 ///
 /// Shared by the applicator (`additionalProperties`) and unevaluated
-/// (`unevaluatedProperties`) vocabularies.
-pub(crate) fn collect_known_property_names(obj: &Map<String, Value>) -> Vec<&str> {
+/// (`unevaluatedProperties`) vocabularies.  A [`HashSet`] keeps per-key
+/// membership checks O(1) when validating objects with many properties.
+pub(crate) fn collect_known_property_names(obj: &Map<String, Value>) -> HashSet<&str> {
     obj.get("properties")
         .and_then(Value::as_object)
         .map(|p| p.keys().map(String::as_str).collect())

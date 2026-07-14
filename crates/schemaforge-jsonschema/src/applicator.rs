@@ -193,7 +193,7 @@ fn apply_additional_properties(
     let known_props = crate::collect_known_property_names(obj);
 
     for (key, value) in inst {
-        if known_props.contains(&key.as_str()) {
+        if known_props.contains(key.as_str()) {
             continue;
         }
         if matches_any_pattern_property(obj, key, ctx) {

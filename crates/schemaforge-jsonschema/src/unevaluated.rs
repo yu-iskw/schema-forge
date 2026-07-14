@@ -36,8 +36,11 @@ fn apply_unevaluated_properties(
     };
     let explicit = crate::collect_known_property_names(obj);
     let has_additional = obj.contains_key("additionalProperties");
+    // Build once — not per instance key — so large objects don't re-walk
+    // allOf/anyOf/oneOf branches on every property.
+    let branch_props = applicator_branch_evaluated_properties(obj);
     for (key, value) in inst {
-        if is_property_evaluated(key, &explicit, obj, has_additional, ctx) {
+        if is_property_evaluated(key, &explicit, obj, has_additional, &branch_props, ctx) {
             continue;
         }
         let prop_path = format!("{path}/{key}");
@@ -47,12 +50,13 @@ fn apply_unevaluated_properties(
 
 fn is_property_evaluated(
     key: &str,
-    explicit: &[&str],
+    explicit: &HashSet<&str>,
     obj: &Map<String, Value>,
     has_additional: bool,
+    branch_props: &HashSet<&str>,
     ctx: &ValidationContext<'_>,
 ) -> bool {
-    if explicit.contains(&key) {
+    if explicit.contains(key) {
         return true;
     }
     if has_additional {
@@ -61,10 +65,9 @@ fn is_property_evaluated(
     if crate::applicator::matches_any_pattern_property(obj, key, ctx) {
         return true;
     }
-    // Check property names declared in allOf/anyOf/oneOf branches.
-    // A property listed in any branch's `properties` keyword is considered
-    // evaluated by that applicator at this schema level.
-    applicator_branch_evaluated_properties(obj).contains(key)
+    // A property listed in any allOf/anyOf/oneOf branch's `properties` is
+    // considered evaluated by that applicator at this schema level.
+    branch_props.contains(key)
 }
 
 /// Collect property names from the `properties` of every branch inside

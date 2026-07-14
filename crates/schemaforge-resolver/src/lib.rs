@@ -271,11 +271,9 @@ impl<R: Resolver> LimitingResolver<R> {
 impl<R: Resolver + Send + Sync> Resolver for LimitingResolver<R> {
     fn resolve(&self, base: &str, reference: &str) -> Result<Value, ResolveError> {
         let value = self.inner.resolve(base, reference)?;
-        // Walk the value tree to estimate serialised byte size without a full
-        // allocation.  The estimate is tight for typical schemas; worst-case it
-        // may under-count by a small constant per string (chars that need
-        // multi-byte JSON escaping), which is acceptable for a size guard.
-        let size = json_byte_size(&value);
+        // Single tree walk for size + depth (estimate may under-count slightly
+        // for strings that need multi-byte `\uXXXX` escapes).
+        let (size, depth) = json_size_and_depth(&value);
         if size > self.max_bytes {
             return Err(ResolveError::SizeExceeded {
                 uri: reference.to_owned(),
@@ -283,7 +281,6 @@ impl<R: Resolver + Send + Sync> Resolver for LimitingResolver<R> {
                 limit: self.max_bytes,
             });
         }
-        let depth = json_depth(&value);
         if depth > self.max_depth {
             return Err(ResolveError::DepthExceeded {
                 uri: reference.to_owned(),
@@ -295,56 +292,59 @@ impl<R: Resolver + Send + Sync> Resolver for LimitingResolver<R> {
     }
 }
 
-/// Compute the maximum nesting depth of a JSON value.
-fn json_depth(v: &Value) -> usize {
+/// Compute nesting depth and estimated compact-JSON byte size in one walk.
+fn json_size_and_depth(v: &Value) -> (usize, usize) {
     match v {
-        Value::Array(arr) => arr.iter().map(json_depth).max().unwrap_or(0) + 1,
-        Value::Object(obj) => obj.values().map(json_depth).max().unwrap_or(0) + 1,
-        _ => 1,
+        Value::Null | Value::Bool(true) => (4, 1),
+        Value::Bool(false) => (5, 1),
+        Value::Number(n) => (n.to_string().len(), 1),
+        Value::String(s) => (json_string_byte_size(s), 1),
+        Value::Array(arr) => {
+            let mut size = 2 + arr.len().saturating_sub(1); // "[" "]" and commas
+            let mut child_depth = 0;
+            for item in arr {
+                let (s, d) = json_size_and_depth(item);
+                size += s;
+                child_depth = child_depth.max(d);
+            }
+            (size, child_depth + 1)
+        }
+        Value::Object(obj) => {
+            let mut size = 2 + obj.len().saturating_sub(1); // "{" "}" and commas
+            let mut child_depth = 0;
+            for (k, val) in obj {
+                size += json_string_byte_size(k) + 1; // "key":
+                let (s, d) = json_size_and_depth(val);
+                size += s;
+                child_depth = child_depth.max(d);
+            }
+            (size, child_depth + 1)
+        }
     }
+}
+
+/// Quoted JSON string length including single-char escapes (`"`, `\`, controls).
+fn json_string_byte_size(s: &str) -> usize {
+    let escapes = s
+        .bytes()
+        .filter(|b| matches!(b, b'"' | b'\\' | 0x00..=0x1f))
+        .count();
+    2 + s.len() + escapes
+}
+
+/// Compute the maximum nesting depth of a JSON value.
+#[cfg(test)]
+fn json_depth(v: &Value) -> usize {
+    json_size_and_depth(v).1
 }
 
 /// Estimate the serialised byte size of a JSON value without allocating a
 /// string.  The estimate matches compact (no-whitespace) JSON.  It may
 /// under-count by a small constant per string that contains characters
 /// needing multi-byte `\uXXXX` escapes, which is acceptable for a size guard.
+#[cfg(test)]
 fn json_byte_size(v: &Value) -> usize {
-    match v {
-        Value::Null | Value::Bool(true) => 4,
-        Value::Bool(false) => 5,
-        Value::Number(n) => n.to_string().len(),
-        Value::String(s) => {
-            // 2 delimiter quotes + content length + one extra byte per char
-            // that needs a single-char escape (", \, control chars).
-            let escapes = s
-                .bytes()
-                .filter(|b| matches!(b, b'"' | b'\\' | 0x00..=0x1f))
-                .count();
-            2 + s.len() + escapes
-        }
-        Value::Array(arr) => {
-            // "[" + items + "," separators + "]"
-            let inner: usize = arr.iter().map(json_byte_size).sum();
-            let commas = arr.len().saturating_sub(1);
-            2 + inner + commas
-        }
-        Value::Object(obj) => {
-            // "{" + key:"value" pairs + "," separators + "}"
-            let inner: usize = obj
-                .iter()
-                .map(|(k, val)| {
-                    let key_escapes = k
-                        .bytes()
-                        .filter(|b| matches!(b, b'"' | b'\\' | 0x00..=0x1f))
-                        .count();
-                    let key_bytes = 2 + k.len() + key_escapes; // "key"
-                    key_bytes + 1 + json_byte_size(val) // :"value"
-                })
-                .sum();
-            let commas = obj.len().saturating_sub(1);
-            2 + inner + commas
-        }
-    }
+    json_size_and_depth(v).0
 }
 
 // ── Lockfile ──────────────────────────────────────────────────────────────────
