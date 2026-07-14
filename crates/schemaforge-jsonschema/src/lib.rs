@@ -415,7 +415,7 @@ pub(crate) fn validate_schema(
 ) -> ValidationOutput {
     let depth = ctx.depth.get();
     if depth >= MAX_DEPTH {
-        return ValidationOutput::fail(ValidationError::new(
+        return ValidationOutput::abort(ValidationError::new(
             path,
             path,
             format!("schema evaluation exceeded maximum nesting depth of {MAX_DEPTH}"),
@@ -766,6 +766,103 @@ mod tests {
         assert!(
             out.aborted,
             "abort flag must propagate through `not` when the sub-schema aborts"
+        );
+    }
+
+    #[test]
+    fn not_anyof_unresolved_ref_is_invalid() {
+        // not { anyOf: [ {$ref: missing} ] } must propagate the abort from
+        // anyOf rather than treating the failed branch as a normal "anyOf miss"
+        // that `not` would then invert into a spurious pass.
+        let schema = json!({"not": {"anyOf": [{"$ref": "#/$defs/Missing"}]}});
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&json!("anything"));
+        assert!(
+            !out.is_valid(),
+            "not{{anyOf{{unresolved $ref}}}} must be invalid"
+        );
+        assert!(
+            out.aborted,
+            "abort flag must propagate through anyOf and then through not"
+        );
+    }
+
+    #[test]
+    fn not_oneof_unresolved_ref_is_invalid() {
+        // not { oneOf: [ {$ref: missing} ] } must propagate the abort from
+        // oneOf rather than inverting a spurious "no branches matched" failure.
+        let schema = json!({"not": {"oneOf": [{"$ref": "#/$defs/Missing"}]}});
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&json!("anything"));
+        assert!(
+            !out.is_valid(),
+            "not{{oneOf{{unresolved $ref}}}} must be invalid"
+        );
+        assert!(
+            out.aborted,
+            "abort flag must propagate through oneOf and then through not"
+        );
+    }
+
+    #[test]
+    fn contains_unresolved_ref_with_min_contains_zero_is_aborted() {
+        // Even when minContains is 0 (so zero matches would normally pass),
+        // an aborted item evaluation must propagate as an abort rather than
+        // silently counting as "0 matches, constraint satisfied".
+        let schema = json!({
+            "contains": {"$ref": "#/$defs/Missing"},
+            "minContains": 0
+        });
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&json!([1, 2, 3]));
+        assert!(
+            !out.is_valid(),
+            "contains with unresolved ref must be invalid even when minContains is 0"
+        );
+        assert!(
+            out.aborted,
+            "abort flag must propagate when contains item evaluation aborts"
+        );
+    }
+
+    #[test]
+    fn not_deep_allof_exceeding_depth_is_invalid() {
+        // A `not` wrapping a deeply-nested allOf that trips the depth guard must
+        // propagate an abort (not invert the depth-exceeded error into a pass).
+        let limit = MAX_DEPTH as usize + 5;
+        let mut inner = json!({"type": "string"});
+        for _ in 0..limit {
+            inner = json!({"allOf": [inner]});
+        }
+        let schema = json!({"not": inner});
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&json!("hello"));
+        assert!(
+            !out.is_valid(),
+            "not{{deep allOf exceeding MAX_DEPTH}} must be invalid"
+        );
+        assert!(
+            out.aborted,
+            "abort flag must propagate from depth guard through allOf and through not"
+        );
+    }
+
+    #[test]
+    fn not_anyof_cyclic_ref_is_invalid() {
+        // Schema: {"not": {"anyOf": [{"$ref": "#"}]}}
+        // The $ref points at the root (the `not` schema), creating a cycle.
+        // The depth guard must fire (as an abort), anyOf must propagate the
+        // abort, and `not` must propagate the abort rather than inverting it.
+        let schema = json!({"not": {"anyOf": [{"$ref": "#"}]}});
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&json!("anything"));
+        assert!(
+            !out.is_valid(),
+            "not{{anyOf{{$ref:#}}}} cyclic schema must be invalid"
+        );
+        assert!(
+            out.aborted,
+            "abort flag must propagate through cyclic $ref, anyOf, and not"
         );
     }
 
