@@ -1,0 +1,38 @@
+name: Rust Validation
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/test.yml
+      - Cargo.toml
+      - Cargo.lock
+      - clippy.toml
+      - rustfmt.toml
+      - crates/**
+      - dev/**
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --all-features

@@ -1,0 +1,15 @@
+target/
+build/
+dist/
+site/
+.direnv/
+.env
+
+# Claude Code local configurations
+.claude/settings.local.json
+CLAUDE.local.md
+
+# CodeQL
+.codeql_db/
+codeql-results.sarif
+codeql-summary.txt

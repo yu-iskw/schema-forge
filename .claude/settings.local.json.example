@@ -1,0 +1,27 @@
+{
+  "$schema": "https://code.claude.com/schemas/settings.json",
+  "$comment": "Copy this file to settings.local.json for personal overrides (gitignored)",
+  "permissions": {
+    "allow": [
+      "Bash(npm *)",
+      "Bash(docker *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'File edited' >> /tmp/claude-edits.log",
+            "async": true
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "MY_CUSTOM_VAR": "value"
+  }
+}

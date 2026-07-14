@@ -1,0 +1,14 @@
+[package]
+name = "workspace-core"
+version = "0.1.0"
+description = "Example shared library crate for the Rust workspace template."
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["template", "rust", "workspace"]
+categories = ["development-tools"]
+
+[lints]
+workspace = true
