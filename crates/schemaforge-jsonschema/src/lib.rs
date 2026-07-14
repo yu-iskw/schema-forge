@@ -22,9 +22,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
-use schemaforge_dialect::schema_children::{
-    SCHEMA_ARRAY_KEYWORDS, SCHEMA_MAP_KEYWORDS, SCHEMA_SINGLE_KEYWORDS,
-};
+use schemaforge_dialect::schema_children::for_each_schema_child;
 use schemaforge_formats::FormatRegistry;
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -245,38 +243,7 @@ impl Validator {
 //
 // Construction-time walks (anchor collection, unsupported-keyword checks,
 // pattern precompilation) must only descend into *schema*-valued keywords.
-// See [`schemaforge_dialect::schema_children`] for the shared allowlists.
-
-/// Call `f` for each immediately reachable child schema of `obj`.
-///
-/// Only structural keywords are visited.  Non-schema annotations
-/// (`default`, `const`, `enum`, `examples`, `title`, `description`, …)
-/// are intentionally skipped.
-fn recurse_into_schema_children<E, F>(obj: &Map<String, Value>, mut f: F) -> Result<(), E>
-where
-    F: FnMut(&Value) -> Result<(), E>,
-{
-    for &key in SCHEMA_SINGLE_KEYWORDS {
-        if let Some(v) = obj.get(key) {
-            f(v)?;
-        }
-    }
-    for &key in SCHEMA_ARRAY_KEYWORDS {
-        if let Some(Value::Array(arr)) = obj.get(key) {
-            for item in arr {
-                f(item)?;
-            }
-        }
-    }
-    for &key in SCHEMA_MAP_KEYWORDS {
-        if let Some(Value::Object(map)) = obj.get(key) {
-            for v in map.values() {
-                f(v)?;
-            }
-        }
-    }
-    Ok(())
-}
+// See [`schemaforge_dialect::schema_children::for_each_schema_child`].
 
 // ── Anchor collection ─────────────────────────────────────────────────────────
 
@@ -303,7 +270,7 @@ fn collect_anchors_recursive(
         }
         anchors.insert(name.clone(), schema.clone());
     }
-    recurse_into_schema_children(obj, |child| collect_anchors_recursive(child, anchors))
+    for_each_schema_child(obj, |child| collect_anchors_recursive(child, anchors))
 }
 
 // ── Unsupported keyword rejection ─────────────────────────────────────────────
@@ -337,7 +304,7 @@ fn check_unsupported_in_object(obj: &Map<String, Value>) -> Result<(), SchemaErr
             });
         }
     }
-    recurse_into_schema_children(obj, check_for_unsupported_keywords)
+    for_each_schema_child(obj, check_for_unsupported_keywords)
 }
 
 // ── Pattern precompilation ────────────────────────────────────────────────────
@@ -367,7 +334,7 @@ fn collect_patterns_from_object(
             register_pattern(Some(k.as_str()), map)?;
         }
     }
-    recurse_into_schema_children(obj, |child| collect_patterns_recursive(child, map))
+    for_each_schema_child(obj, |child| collect_patterns_recursive(child, map))
 }
 
 fn register_pattern(

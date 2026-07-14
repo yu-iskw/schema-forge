@@ -5,6 +5,8 @@
 //! `examples`, `title`, and `description` are plain JSON values and must not
 //! be recursed into.
 
+use serde_json::{Map, Value};
+
 /// Keywords whose value is a single sub-schema.
 pub const SCHEMA_SINGLE_KEYWORDS: &[&str] = &[
     "additionalProperties",
@@ -31,3 +33,36 @@ pub const SCHEMA_MAP_KEYWORDS: &[&str] = &[
     "patternProperties",
     "properties",
 ];
+
+/// Call `f` for each immediately reachable child schema of `obj`.
+///
+/// Only structural keywords are visited.  Non-schema annotations
+/// (`default`, `const`, `enum`, `examples`, `title`, `description`, …)
+/// are intentionally skipped.
+///
+/// Stops early and returns `Err(e)` when `f` returns `Err`.
+pub fn for_each_schema_child<E, F>(obj: &Map<String, Value>, mut f: F) -> Result<(), E>
+where
+    F: FnMut(&Value) -> Result<(), E>,
+{
+    for &key in SCHEMA_SINGLE_KEYWORDS {
+        if let Some(v) = obj.get(key) {
+            f(v)?;
+        }
+    }
+    for &key in SCHEMA_ARRAY_KEYWORDS {
+        if let Some(Value::Array(arr)) = obj.get(key) {
+            for item in arr {
+                f(item)?;
+            }
+        }
+    }
+    for &key in SCHEMA_MAP_KEYWORDS {
+        if let Some(Value::Object(map)) = obj.get(key) {
+            for v in map.values() {
+                f(v)?;
+            }
+        }
+    }
+    Ok(())
+}

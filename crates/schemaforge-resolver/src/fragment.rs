@@ -1,8 +1,6 @@
 //! URI fragment application for resolved JSON Schema documents.
 
-use schemaforge_dialect::schema_children::{
-    SCHEMA_ARRAY_KEYWORDS, SCHEMA_MAP_KEYWORDS, SCHEMA_SINGLE_KEYWORDS,
-};
+use schemaforge_dialect::schema_children::for_each_schema_child;
 use serde_json::{Map, Value};
 
 use crate::ResolveError;
@@ -48,32 +46,10 @@ fn find_anchor_in_value(val: &Value, name: &str) -> Option<Value> {
 
 /// Recurse into all schema-valued children of `obj`.
 fn find_anchor_in_schema_children(obj: &Map<String, Value>, name: &str) -> Option<Value> {
-    for &key in SCHEMA_SINGLE_KEYWORDS {
-        if let Some(child) = obj.get(key)
-            && let Some(v) = find_anchor_in_value(child, name)
-        {
-            return Some(v);
-        }
-    }
-    for &key in SCHEMA_ARRAY_KEYWORDS {
-        if let Some(Value::Array(arr)) = obj.get(key) {
-            for child in arr {
-                if let Some(v) = find_anchor_in_value(child, name) {
-                    return Some(v);
-                }
-            }
-        }
-    }
-    for &key in SCHEMA_MAP_KEYWORDS {
-        if let Some(Value::Object(map)) = obj.get(key) {
-            for child in map.values() {
-                if let Some(v) = find_anchor_in_value(child, name) {
-                    return Some(v);
-                }
-            }
-        }
-    }
-    None
+    for_each_schema_child(obj, |child| {
+        find_anchor_in_value(child, name).map_or(Ok(()), Err)
+    })
+    .err()
 }
 
 #[cfg(test)]
