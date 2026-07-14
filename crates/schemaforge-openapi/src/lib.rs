@@ -407,6 +407,12 @@ fn adapt_oas30_schema(schema: &Value) -> Value {
                 "enum".to_owned(),
                 serde_json::json!([const_val, Value::Null]),
             );
+            // When a `type` keyword is also present alongside `const`, widen it to
+            // include "null" so that the null we just added to the enum can pass.
+            if new_obj.contains_key("type") {
+                let type_val = new_obj.get("type").cloned().unwrap_or(Value::Null);
+                new_obj.insert("type".to_owned(), make_nullable_type(type_val));
+            }
         } else {
             // No enum/const: widen the type to include null.
             let type_val = new_obj.get("type").cloned().unwrap_or(Value::Null);
@@ -706,6 +712,30 @@ mod tests {
         let vals = adapted["enum"].as_array().unwrap();
         assert!(vals.contains(&json!(42)));
         assert!(vals.contains(&Value::Null));
+    }
+
+    #[test]
+    fn adapt_oas30_nullable_with_const_and_type_widens_type() {
+        // nullable: true + type + const: null must be added to enum AND type must
+        // be widened so that a null value passes both the type check and the enum check.
+        let schema = json!({"type": "string", "const": "active", "nullable": true});
+        let adapted = adapt_oas30_schema(&schema);
+        // const must be removed and replaced by enum.
+        assert!(adapted.get("const").is_none(), "const must be removed");
+        // enum must contain the original const value and null.
+        let vals = adapted["enum"].as_array().unwrap();
+        assert!(
+            vals.contains(&json!("active")),
+            "original const must be in enum"
+        );
+        assert!(vals.contains(&Value::Null), "null must be in enum");
+        // type must be widened to include null so that the null enum value validates.
+        let types = adapted["type"].as_array().unwrap();
+        assert!(
+            types.contains(&json!("string")),
+            "string must remain in type"
+        );
+        assert!(types.contains(&json!("null")), "null must be added to type");
     }
 
     #[test]
