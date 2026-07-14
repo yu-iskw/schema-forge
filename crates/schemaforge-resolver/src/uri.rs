@@ -4,21 +4,37 @@
 ///
 /// Handles `.` (current directory) and `..` (parent directory) path segments
 /// so that `file:///a/./b.json` and `file:///a/b.json` produce the same path.
+///
+/// Empty segments beyond the leading one are also dropped, which collapses
+/// duplicate slashes (`//`) and strips a trailing `/`.  The leading empty
+/// segment of an absolute path (e.g. `""` before `/a/b`) is preserved so
+/// that the result remains rooted.
 fn remove_dot_segments(path: &str) -> String {
     let mut stack: Vec<&str> = Vec::new();
-    for seg in path.split('/') {
+    for (i, seg) in path.split('/').enumerate() {
         match seg {
-            "." => {}
             ".." => {
-                // Never pop an empty leading segment (represents the root `/`).
+                // Never pop the leading empty segment (represents the root `/`).
                 if stack.last().is_some_and(|s: &&str| !s.is_empty()) {
                     stack.pop();
                 }
             }
+            // Keep the very first empty segment so that absolute paths stay
+            // rooted; skip every subsequent empty segment (produced by `//`
+            // or a trailing `/`).  Treat `.` the same as a redundant empty.
+            "" if i == 0 => stack.push(seg),
+            "." | "" => {}
             other => stack.push(other),
         }
     }
-    stack.join("/")
+    let joined = stack.join("/");
+    // A pure-slash path (e.g. `/`) leaves only the leading `""` on the stack,
+    // which joins to an empty string.  Restore the canonical root `/`.
+    if joined.is_empty() && path.starts_with('/') {
+        "/".to_owned()
+    } else {
+        joined
+    }
 }
 
 /// Normalize the path component of a `scheme://authority/path` URI by applying
@@ -217,5 +233,59 @@ mod tests {
     fn resolve_uri_dotdot_with_fragment() {
         let result = resolve_uri("file:///tmp/sub/nested.json", "../schema.json#diskOnly");
         assert_eq!(result, "file:///tmp/schema.json#diskOnly");
+    }
+
+    // ── Double-slash and trailing-slash collapsing ────────────────────────────
+
+    #[test]
+    fn remove_dot_segments_double_slash_collapses() {
+        assert_eq!(remove_dot_segments("/a//b.json"), "/a/b.json");
+    }
+
+    #[test]
+    fn remove_dot_segments_dot_double_slash_collapses() {
+        assert_eq!(remove_dot_segments("/a/.//b.json"), "/a/b.json");
+    }
+
+    #[test]
+    fn remove_dot_segments_trailing_slash_stripped() {
+        assert_eq!(remove_dot_segments("/a/b.json/"), "/a/b.json");
+    }
+
+    #[test]
+    fn remove_dot_segments_root_path_preserved() {
+        assert_eq!(remove_dot_segments("/"), "/");
+    }
+
+    #[test]
+    fn normalize_uri_collapses_double_slash_in_path() {
+        assert_eq!(
+            normalize_uri("file:///tmp//schema.json".to_string()),
+            "file:///tmp/schema.json"
+        );
+    }
+
+    #[test]
+    fn normalize_uri_strips_trailing_slash() {
+        assert_eq!(
+            normalize_uri("file:///tmp/schema.json/".to_string()),
+            "file:///tmp/schema.json"
+        );
+    }
+
+    #[test]
+    fn normalize_path_in_uri_double_slash_with_fragment() {
+        assert_eq!(
+            normalize_path_in_uri("file:///tmp//schema.json#diskOnly"),
+            "file:///tmp/schema.json#diskOnly"
+        );
+    }
+
+    #[test]
+    fn normalize_path_in_uri_trailing_slash_with_fragment() {
+        assert_eq!(
+            normalize_path_in_uri("file:///tmp/schema.json/#diskOnly"),
+            "file:///tmp/schema.json#diskOnly"
+        );
     }
 }

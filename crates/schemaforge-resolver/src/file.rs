@@ -704,6 +704,90 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Register the canonical URI offline (no anchor); disk has the anchor.
+    /// Resolving via a double-slash alias (`//schema.json`) must collapse the
+    /// double slash, hit the offline registry, and return NotFound — never
+    /// falling through to disk to find the anchor.
+    #[test]
+    fn file_resolver_double_slash_hits_offline_not_disk() {
+        let dir = std::env::temp_dir().join("sf_double_slash_offline_test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let disk_content = r#"{"$anchor":"diskOnly","type":"integer"}"#;
+        let file_path = dir.join("schema.json");
+        std::fs::write(&file_path, disk_content).unwrap();
+
+        let canonical_uri = format!("file://{}", file_path.display());
+        let double_slash_uri = format!("file://{}//schema.json", dir.display());
+
+        let mut r = FileResolver::with_base_dir(&dir);
+        r.register(&canonical_uri, serde_json::json!({"type": "string"}));
+
+        let result = r.resolve("", &format!("{double_slash_uri}#diskOnly"));
+        assert!(
+            matches!(result, Err(ResolveError::NotFound(_))),
+            "double-slash alias must resolve via offline authority and return NotFound, not load disk: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Register the canonical URI offline (no anchor); disk has the anchor.
+    /// Resolving via a dot-double-slash alias (`.//schema.json`) must collapse
+    /// both the dot and the double slash, hit the offline registry, and return
+    /// NotFound — never falling through to disk.
+    #[test]
+    fn file_resolver_dot_double_slash_hits_offline_not_disk() {
+        let dir = std::env::temp_dir().join("sf_dot_double_slash_offline_test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let disk_content = r#"{"$anchor":"diskOnly","type":"integer"}"#;
+        let file_path = dir.join("schema.json");
+        std::fs::write(&file_path, disk_content).unwrap();
+
+        let canonical_uri = format!("file://{}", file_path.display());
+        let dot_dslash_uri = format!("file://{}/.//schema.json", dir.display());
+
+        let mut r = FileResolver::with_base_dir(&dir);
+        r.register(&canonical_uri, serde_json::json!({"type": "string"}));
+
+        let result = r.resolve("", &format!("{dot_dslash_uri}#diskOnly"));
+        assert!(
+            matches!(result, Err(ResolveError::NotFound(_))),
+            "dot-double-slash alias must resolve via offline authority and return NotFound, not load disk: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Register the canonical URI offline (no anchor); disk has the anchor.
+    /// Resolving via a trailing-slash alias (`schema.json/`) must strip the
+    /// trailing slash, match the offline registry key, and return NotFound —
+    /// never falling through to disk to find the anchor.
+    #[test]
+    fn file_resolver_trailing_slash_hits_offline_not_disk() {
+        let dir = std::env::temp_dir().join("sf_trailing_slash_offline_test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let disk_content = r#"{"$anchor":"diskOnly","type":"integer"}"#;
+        let file_path = dir.join("schema.json");
+        std::fs::write(&file_path, disk_content).unwrap();
+
+        let canonical_uri = format!("file://{}", file_path.display());
+        let trailing_slash_uri = format!("file://{}/schema.json/", dir.display());
+
+        let mut r = FileResolver::with_base_dir(&dir);
+        r.register(&canonical_uri, serde_json::json!({"type": "string"}));
+
+        let result = r.resolve("", &format!("{trailing_slash_uri}#diskOnly"));
+        assert!(
+            matches!(result, Err(ResolveError::NotFound(_))),
+            "trailing-slash alias must resolve via offline authority and return NotFound, not load disk: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Register a URI in offline (without a particular anchor), have a disk
     /// file at that same URI path that *does* contain the anchor.  Resolving
     /// the URI with the anchor fragment must return NotFound from the offline
