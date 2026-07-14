@@ -635,6 +635,74 @@ mod tests {
         assert_eq!(result.unwrap(), serde_json::json!({ "type": "number" }));
     }
 
+    /// Register the canonical URI offline (no anchor in the offline doc); the
+    /// disk file at the same path *does* have the anchor.  Resolving via a
+    /// dot-alias (`./schema.json`) must still hit the offline registry and
+    /// return NotFound — the alias must not bypass the authority check and fall
+    /// through to disk.
+    #[test]
+    fn file_resolver_dot_alias_hits_offline_not_disk() {
+        let dir = std::env::temp_dir().join("sf_dot_alias_offline_test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Disk file carries the anchor; offline doc does not.
+        let disk_content = r#"{"$anchor":"diskOnly","type":"integer"}"#;
+        let file_path = dir.join("schema.json");
+        std::fs::write(&file_path, disk_content).unwrap();
+        let canonical_uri = format!("file://{}", file_path.display());
+        let dot_alias_uri = format!("file://{}/./{}", dir.display(), "schema.json");
+
+        let mut r = FileResolver::with_base_dir(&dir);
+        // Register under the canonical URI — no anchor in the offline value.
+        r.register(&canonical_uri, serde_json::json!({"type": "string"}));
+
+        // Resolving via the dot-alias with the anchor fragment must return
+        // NotFound from the offline registry, not fall through to disk.
+        let result = r.resolve("", &format!("{dot_alias_uri}#diskOnly"));
+        assert!(
+            matches!(result, Err(ResolveError::NotFound(_))),
+            "dot-alias must resolve via offline authority and return NotFound, not load disk: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Resolve a `../schema.json#diskOnly` reference relative to a sub-document
+    /// when the canonical `schema.json` URI is registered offline without that
+    /// anchor.  The offline registry must be authoritative and return NotFound
+    /// — the parent-dir traversal alias must not bypass the registry and read
+    /// the anchor from disk.
+    #[test]
+    fn file_resolver_dotdot_ref_hits_offline_not_disk() {
+        let dir = std::env::temp_dir().join("sf_dotdot_ref_offline_test");
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // Disk file at the parent level carries the anchor.
+        let disk_content = r#"{"$anchor":"diskOnly","type":"integer"}"#;
+        let file_path = dir.join("schema.json");
+        std::fs::write(&file_path, disk_content).unwrap();
+        // Also create the nested doc so resolve_uri has a valid base.
+        std::fs::write(sub.join("nested.json"), r#"{"type":"object"}"#).unwrap();
+
+        let canonical_uri = format!("file://{}", file_path.display());
+        let base_uri = format!("file://{}/nested.json", sub.display());
+
+        let mut r = FileResolver::with_base_dir(&dir);
+        // Register the parent schema offline — no anchor.
+        r.register(&canonical_uri, serde_json::json!({"type": "string"}));
+
+        // Resolving `../schema.json#diskOnly` relative to the nested base must
+        // hit the offline registry (authority) and return NotFound, not disk.
+        let result = r.resolve(&base_uri, "../schema.json#diskOnly");
+        assert!(
+            matches!(result, Err(ResolveError::NotFound(_))),
+            "../schema.json reference must use offline authority and return NotFound, not fall through to disk: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Register a URI in offline (without a particular anchor), have a disk
     /// file at that same URI path that *does* contain the anchor.  Resolving
     /// the URI with the anchor fragment must return NotFound from the offline
