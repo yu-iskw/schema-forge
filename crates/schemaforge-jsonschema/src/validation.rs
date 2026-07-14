@@ -211,18 +211,19 @@ fn apply_numeric_constraints(
 fn check_minimum(obj: &Map<String, Value>, n: f64, path: &str, out: &mut ValidationOutput) {
     // Draft 4 / OAS 3.0: `exclusiveMinimum: true` promotes `minimum` to an
     // exclusive bound.  Draft 2020-12 uses a numeric `exclusiveMinimum` directly.
-    let excl_bool = obj
+    let exclusive = obj
         .get("exclusiveMinimum")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if let Some(min) = obj.get("minimum").and_then(Value::as_f64)
-        && ((excl_bool && n <= min) || (!excl_bool && n < min))
-    {
-        out.merge(ValidationOutput::fail(ValidationError::new(
-            path,
-            format!("{path}/minimum"),
-            format!("{n} < minimum {min}"),
-        )));
+    if let Some(min) = obj.get("minimum").and_then(Value::as_f64) {
+        let violates = if exclusive { n <= min } else { n < min };
+        if violates {
+            out.merge(ValidationOutput::fail(ValidationError::new(
+                path,
+                format!("{path}/minimum"),
+                format!("{n} < minimum {min}"),
+            )));
+        }
     }
     if let Some(emin) = obj.get("exclusiveMinimum").and_then(Value::as_f64)
         && n <= emin
@@ -238,18 +239,19 @@ fn check_minimum(obj: &Map<String, Value>, n: f64, path: &str, out: &mut Validat
 fn check_maximum(obj: &Map<String, Value>, n: f64, path: &str, out: &mut ValidationOutput) {
     // Draft 4 / OAS 3.0: `exclusiveMaximum: true` promotes `maximum` to an
     // exclusive bound.  Draft 2020-12 uses a numeric `exclusiveMaximum` directly.
-    let excl_bool = obj
+    let exclusive = obj
         .get("exclusiveMaximum")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if let Some(max) = obj.get("maximum").and_then(Value::as_f64)
-        && ((excl_bool && n >= max) || (!excl_bool && n > max))
-    {
-        out.merge(ValidationOutput::fail(ValidationError::new(
-            path,
-            format!("{path}/maximum"),
-            format!("{n} > maximum {max}"),
-        )));
+    if let Some(max) = obj.get("maximum").and_then(Value::as_f64) {
+        let violates = if exclusive { n >= max } else { n > max };
+        if violates {
+            out.merge(ValidationOutput::fail(ValidationError::new(
+                path,
+                format!("{path}/maximum"),
+                format!("{n} > maximum {max}"),
+            )));
+        }
     }
     if let Some(emax) = obj.get("exclusiveMaximum").and_then(Value::as_f64)
         && n >= emax

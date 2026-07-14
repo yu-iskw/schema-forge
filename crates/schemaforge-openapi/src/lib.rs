@@ -389,32 +389,24 @@ fn adapt_oas30_schema(schema: &Value) -> Value {
     {
         new_obj.remove("nullable");
 
+        // After making null an allowed value, widen `type` so null can pass the
+        // type check.  With enum/const, widen only when `type` is already present;
+        // otherwise always insert a null-capable type.
+        let mut always_widen_type = false;
         if let Some(Value::Array(enum_vals)) = new_obj.get_mut("enum") {
-            // enum present: add null to the allowed values so the schema accepts null.
             if !enum_vals.contains(&Value::Null) {
                 enum_vals.push(Value::Null);
             }
-            // When a `type` keyword is also present alongside `enum`, the type
-            // constraint further restricts valid values.  Widen it to include
-            // "null" so that the null we just added to the enum can pass.
-            if new_obj.contains_key("type") {
-                let type_val = new_obj.get("type").cloned().unwrap_or(Value::Null);
-                new_obj.insert("type".to_owned(), make_nullable_type(type_val));
-            }
         } else if let Some(const_val) = new_obj.remove("const") {
-            // const present: convert to enum [const_val, null] so null is permitted.
             new_obj.insert(
                 "enum".to_owned(),
                 serde_json::json!([const_val, Value::Null]),
             );
-            // When a `type` keyword is also present alongside `const`, widen it to
-            // include "null" so that the null we just added to the enum can pass.
-            if new_obj.contains_key("type") {
-                let type_val = new_obj.get("type").cloned().unwrap_or(Value::Null);
-                new_obj.insert("type".to_owned(), make_nullable_type(type_val));
-            }
         } else {
-            // No enum/const: widen the type to include null.
+            always_widen_type = true;
+        }
+
+        if always_widen_type || new_obj.contains_key("type") {
             let type_val = new_obj.get("type").cloned().unwrap_or(Value::Null);
             new_obj.insert("type".to_owned(), make_nullable_type(type_val));
         }
