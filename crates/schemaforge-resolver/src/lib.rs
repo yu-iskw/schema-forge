@@ -154,19 +154,38 @@ impl Resolver for OfflineResolver {
 // ── FileResolver ──────────────────────────────────────────────────────────────
 
 /// Resolves schemas from the filesystem, falling back to an offline registry.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FileResolver {
     offline: OfflineResolver,
     base_dir: Option<std::path::PathBuf>,
+    /// Maximum allowed byte size of a schema file (checked via metadata before read).
+    max_bytes: u64,
 }
 
 impl FileResolver {
+    /// Default file size limit: 50 MiB.
+    pub const DEFAULT_MAX_BYTES: u64 = 52_428_800;
+
     /// Create a file resolver rooted at `base_dir`.
     #[must_use]
     pub fn with_base_dir(base_dir: impl Into<std::path::PathBuf>) -> Self {
         Self {
             offline: OfflineResolver::new(),
             base_dir: Some(base_dir.into()),
+            max_bytes: Self::DEFAULT_MAX_BYTES,
+        }
+    }
+
+    /// Create a file resolver rooted at `base_dir` with a custom size limit.
+    #[must_use]
+    pub fn with_base_dir_and_limit(
+        base_dir: impl Into<std::path::PathBuf>,
+        max_bytes: u64,
+    ) -> Self {
+        Self {
+            offline: OfflineResolver::new(),
+            base_dir: Some(base_dir.into()),
+            max_bytes,
         }
     }
 
@@ -176,13 +195,23 @@ impl FileResolver {
     }
 }
 
+impl Default for FileResolver {
+    fn default() -> Self {
+        Self {
+            offline: OfflineResolver::new(),
+            base_dir: None,
+            max_bytes: Self::DEFAULT_MAX_BYTES,
+        }
+    }
+}
+
 impl Resolver for FileResolver {
     fn resolve(&self, base: &str, reference: &str) -> Result<Value, ResolveError> {
         if let Ok(v) = self.offline.resolve(base, reference) {
             return Ok(v);
         }
         let resolved = resolve_uri(base, reference);
-        load_from_path(&resolved, self.base_dir.as_deref())
+        load_from_path(&resolved, self.base_dir.as_deref(), self.max_bytes)
     }
 }
 
@@ -401,7 +430,11 @@ impl LockFile {
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-fn load_from_path(uri: &str, base_dir: Option<&Path>) -> Result<Value, ResolveError> {
+fn load_from_path(
+    uri: &str,
+    base_dir: Option<&Path>,
+    max_bytes: u64,
+) -> Result<Value, ResolveError> {
     let path = uri_to_jailed_path(uri, base_dir)?;
 
     // Open the file first to obtain a stable file descriptor before reading.
@@ -413,15 +446,13 @@ fn load_from_path(uri: &str, base_dir: Option<&Path>) -> Result<Value, ResolveEr
         reason: e.to_string(),
     })?;
 
-    // Re-canonicalize the path now that the file is open and re-verify the
-    // jail.  Any symlink that was swapped in after uri_to_jailed_path but
-    // before File::open will be caught here.  Fail-closed: if canonicalize
-    // fails (e.g. the file was deleted or replaced after open), reject the
-    // request rather than skipping the jail check.
+    // Re-canonicalize via the open file descriptor so that any symlink swap
+    // that occurred between uri_to_jailed_path and File::open is caught.
+    // On Linux/Unix we use /proc/self/fd/{fd} which resolves the actual target
+    // of the descriptor rather than re-walking the (now possibly stale) path.
+    // Fail-closed: any canonicalization failure is treated as a jail escape.
     if let Some(base) = base_dir {
-        let canonical = std::fs::canonicalize(&path).map_err(|_| ResolveError::PathEscaped {
-            path: path.display().to_string(),
-        })?;
+        let canonical = post_open_canonical(&file, &path)?;
         let canonical_base =
             std::fs::canonicalize(base).unwrap_or_else(|_| lexically_normalize(base));
         if !canonical.starts_with(&canonical_base) {
@@ -429,6 +460,16 @@ fn load_from_path(uri: &str, base_dir: Option<&Path>) -> Result<Value, ResolveEr
                 path: canonical.display().to_string(),
             });
         }
+    }
+
+    // Guard against large files before allocating a read buffer.
+    let file_len = file.metadata().map_or(0, |m| m.len());
+    if file_len > max_bytes {
+        return Err(ResolveError::SizeExceeded {
+            uri: uri.to_owned(),
+            size: file_len as usize,
+            limit: max_bytes as usize,
+        });
     }
 
     let mut text = String::new();
@@ -442,6 +483,34 @@ fn load_from_path(uri: &str, base_dir: Option<&Path>) -> Result<Value, ResolveEr
         uri: uri.to_owned(),
         reason: e.to_string(),
     })
+}
+
+/// Canonicalize the real path of an already-open file.
+///
+/// On Linux (and Unix generally) reads `/proc/self/fd/{fd}` so that the OS
+/// resolves the descriptor's actual target rather than re-walking a path that
+/// could have been swapped since `File::open`.  On non-Unix platforms falls
+/// back to `std::fs::canonicalize` on the pre-open path.  Either way,
+/// failure is treated as a jail escape (fail-closed).
+fn post_open_canonical(
+    file: &std::fs::File,
+    fallback_path: &Path,
+) -> Result<std::path::PathBuf, ResolveError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let proc_link = std::path::PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+        std::fs::canonicalize(&proc_link).map_err(|_| ResolveError::PathEscaped {
+            path: fallback_path.display().to_string(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        std::fs::canonicalize(fallback_path).map_err(|_| ResolveError::PathEscaped {
+            path: fallback_path.display().to_string(),
+        })
+    }
 }
 
 /// Resolve a URI to a filesystem path, enforcing a base-directory jail.
@@ -908,6 +977,57 @@ mod tests {
         let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir(&jail);
         let _ = std::fs::remove_dir(&tmp);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_self_fd_resolves_to_file_path() {
+        // Verify that /proc/self/fd/{fd} resolves to the same canonical path
+        // as the file we opened, confirming the mechanism is available and
+        // used by post_open_canonical on Linux.
+        use std::os::unix::io::AsRawFd;
+        let jail = make_jail();
+        let schema_path = jail.join("schema.json");
+        let file = std::fs::File::open(&schema_path).unwrap();
+        let proc_link = std::path::PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+        let via_proc = std::fs::canonicalize(&proc_link).unwrap();
+        let via_path = std::fs::canonicalize(&schema_path).unwrap();
+        assert_eq!(
+            via_proc, via_path,
+            "/proc/self/fd/{{fd}} must resolve to the same path as the opened file"
+        );
+    }
+
+    #[test]
+    fn file_resolver_rejects_oversized_file() {
+        let jail = make_jail();
+        // Write a schema larger than the custom 5-byte limit.
+        let path = jail.join("large.json");
+        std::fs::write(&path, r#"{"type":"string"}"#).unwrap();
+        let r = FileResolver::with_base_dir_and_limit(&jail, 5);
+        let uri = format!("file://{}", path.display());
+        let err = r.resolve("", &uri).unwrap_err();
+        assert!(
+            matches!(err, ResolveError::SizeExceeded { .. }),
+            "expected SizeExceeded for oversized file, got {err:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_resolver_accepts_file_within_size_limit() {
+        let dir = std::env::temp_dir().join("schemaforge_size_ok_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("schema.json");
+        std::fs::write(&path, r#"{"type":"string"}"#).unwrap();
+        let r = FileResolver::with_base_dir_and_limit(&dir, 1_000_000);
+        let uri = format!("file://{}", path.display());
+        let result = r.resolve("", &uri);
+        assert!(
+            result.is_ok(),
+            "expected Ok for file within size limit, got {result:?}"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

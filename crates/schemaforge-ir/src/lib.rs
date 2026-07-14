@@ -315,28 +315,8 @@ impl SchemaNode {
         self.properties
             .iter()
             .map(|(name, child)| {
-                let types: Vec<String> = child
-                    .types
-                    .type_names()
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect();
-                ObjectAttribute {
-                    name: name.clone(),
-                    required: self.object.required.contains(name),
-                    types: types.clone(),
-                    title: child.title.clone(),
-                    description: child.description.clone(),
-                    format: child.string.format.clone(),
-                    attributes: child.object_attributes(),
-                    schema: SchemaMetadata {
-                        types,
-                        title: child.title.clone(),
-                        description: child.description.clone(),
-                        format: child.string.format.clone(),
-                        nullable: child.types.null,
-                    },
-                }
+                let required = self.object.required.contains(name);
+                object_attribute_for(name, child, required)
             })
             .collect()
     }
@@ -345,28 +325,8 @@ impl SchemaNode {
     #[must_use]
     pub fn object_attribute(&self, name: &str) -> Option<ObjectAttribute> {
         let child = self.properties.get(name)?;
-        let types: Vec<String> = child
-            .types
-            .type_names()
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        Some(ObjectAttribute {
-            name: name.to_owned(),
-            required: self.object.required.iter().any(|r| r == name),
-            types: types.clone(),
-            title: child.title.clone(),
-            description: child.description.clone(),
-            format: child.string.format.clone(),
-            attributes: child.object_attributes(),
-            schema: SchemaMetadata {
-                types,
-                title: child.title.clone(),
-                description: child.description.clone(),
-                format: child.string.format.clone(),
-                nullable: child.types.null,
-            },
-        })
+        let required = self.object.required.iter().any(|r| r == name);
+        Some(object_attribute_for(name, child, required))
     }
 
     /// Serialize object attribute descriptors to a JSON value.
@@ -377,6 +337,36 @@ impl SchemaNode {
     /// represented by `serde_json`.
     pub fn object_attributes_json(&self) -> Result<Value, serde_json::Error> {
         serde_json::to_value(self.object_attributes())
+    }
+}
+
+/// Build an [`ObjectAttribute`] descriptor for a single property.
+///
+/// Shared by [`SchemaNode::object_attributes`] and
+/// [`SchemaNode::object_attribute`] to avoid duplicating the construction
+/// logic.
+fn object_attribute_for(name: &str, child: &SchemaNode, required: bool) -> ObjectAttribute {
+    let types: Vec<String> = child
+        .types
+        .type_names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    ObjectAttribute {
+        name: name.to_owned(),
+        required,
+        types: types.clone(),
+        title: child.title.clone(),
+        description: child.description.clone(),
+        format: child.string.format.clone(),
+        attributes: child.object_attributes(),
+        schema: SchemaMetadata {
+            types,
+            title: child.title.clone(),
+            description: child.description.clone(),
+            format: child.string.format.clone(),
+            nullable: child.types.null,
+        },
     }
 }
 

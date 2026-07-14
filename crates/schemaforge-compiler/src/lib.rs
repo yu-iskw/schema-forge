@@ -258,17 +258,25 @@ fn lower_local_ref(ref_str: &str, ctx: &mut LowerCtx<'_>) -> Result<SchemaNode, 
     result
 }
 
+/// Schema keywords that do not add applicator or assertion constraints and
+/// can be ignored when deciding whether a `$ref` has meaningful siblings.
+const REF_PASSTHROUGH_KEYS: &[&str] = &[
+    "$ref",
+    "$id",
+    "$anchor",
+    "$dynamicAnchor",
+    "$schema",
+    "$defs",
+    "$comment",
+];
+
 fn lower_object_schema(
     obj: &serde_json::Map<String, Value>,
     ctx: &mut LowerCtx<'_>,
 ) -> Result<SchemaNode, CompileError> {
-    // A `$ref` short-circuits all sibling keywords (pre-2019-09 behaviour).
-    // We lower the referenced schema directly; sibling keywords are ignored
-    // because the overwhelming majority of real-world schemas follow this
-    // convention and mixing $ref with siblings requires full merging logic.
     if let Some(Value::String(ref_str)) = obj.get("$ref") {
         if ref_str.starts_with('#') {
-            return lower_local_ref(ref_str, ctx);
+            return lower_local_ref_with_siblings(ref_str, obj, ctx);
         }
         // External URI – not yet supported.
         return Err(CompileError::UnresolvedRef {
@@ -276,6 +284,43 @@ fn lower_object_schema(
             reason: "external $ref URIs are not yet resolved; only local fragment refs (#/…) are supported".to_owned(),
         });
     }
+    lower_object_keywords(obj, ctx)
+}
+
+/// Lower a local `$ref` that may have sibling keywords (Draft 2020-12 semantics).
+///
+/// When constraint keywords appear alongside `$ref` (anything beyond the
+/// pure-annotation pass-through set), the compiler builds an `allOf` of
+/// the referenced schema and the sibling constraints so that both are
+/// applied.  If only metadata / structural keywords accompany `$ref`, the
+/// short-circuit path is kept for efficiency.
+fn lower_local_ref_with_siblings(
+    ref_str: &str,
+    obj: &serde_json::Map<String, Value>,
+    ctx: &mut LowerCtx<'_>,
+) -> Result<SchemaNode, CompileError> {
+    let has_siblings = obj
+        .keys()
+        .any(|k| !REF_PASSTHROUGH_KEYS.contains(&k.as_str()));
+    if !has_siblings {
+        return lower_local_ref(ref_str, ctx);
+    }
+    // Build allOf([ref_target, sibling_constraints]) so both are enforced.
+    let ref_node = lower_local_ref(ref_str, ctx)?;
+    let mut obj_without_ref = obj.clone();
+    obj_without_ref.remove("$ref");
+    let sibling_node = lower_object_keywords(&obj_without_ref, ctx)?;
+    Ok(SchemaNode {
+        all_of: vec![ref_node, sibling_node],
+        ..SchemaNode::default()
+    })
+}
+
+/// Lower all non-`$ref` keywords of an object schema into a [`SchemaNode`].
+fn lower_object_keywords(
+    obj: &serde_json::Map<String, Value>,
+    ctx: &mut LowerCtx<'_>,
+) -> Result<SchemaNode, CompileError> {
     let mut node = SchemaNode::default();
     extract_types(obj, &mut node);
     extract_metadata(obj, &mut node);
@@ -324,39 +369,50 @@ fn extract_string_constraints(obj: &serde_json::Map<String, Value>, node: &mut S
 }
 
 fn extract_numeric_constraints(obj: &serde_json::Map<String, Value>, node: &mut SchemaNode) {
-    let minimum = obj
-        .get("minimum")
-        .and_then(Value::as_f64)
-        .map(|v| NumericBound {
-            value: v,
-            exclusive: false,
-        });
-    let exclusive_min = obj
-        .get("exclusiveMinimum")
-        .and_then(Value::as_f64)
-        .map(|v| NumericBound {
-            value: v,
-            exclusive: true,
-        });
-    let maximum = obj
-        .get("maximum")
-        .and_then(Value::as_f64)
-        .map(|v| NumericBound {
-            value: v,
-            exclusive: false,
-        });
-    let exclusive_max = obj
-        .get("exclusiveMaximum")
-        .and_then(Value::as_f64)
-        .map(|v| NumericBound {
-            value: v,
-            exclusive: true,
-        });
     node.numeric = NumericConstraints {
-        minimum: exclusive_min.or(minimum),
-        maximum: exclusive_max.or(maximum),
+        minimum: extract_bound(
+            obj,
+            "exclusiveMinimum",
+            obj.get("minimum").and_then(Value::as_f64),
+        ),
+        maximum: extract_bound(
+            obj,
+            "exclusiveMaximum",
+            obj.get("maximum").and_then(Value::as_f64),
+        ),
         multiple_of: obj.get("multipleOf").and_then(Value::as_f64),
     };
+}
+
+/// Resolve the effective numeric bound for a minimum or maximum constraint.
+///
+/// Handles both Draft 2020-12 style (`exclusiveMinimum: <number>`) and the
+/// legacy boolean style used in Draft 4 / OpenAPI 3.0 (`exclusiveMinimum:
+/// true` paired with a numeric `minimum`).
+///
+/// - `exclusiveMinimum: <number>` → exclusive bound at that value.
+/// - `exclusiveMinimum: true`     → promote adjacent `minimum` to exclusive.
+/// - `exclusiveMinimum: false`    → keep adjacent `minimum` as non-exclusive.
+/// - `exclusiveMinimum` absent    → keep adjacent `minimum` as non-exclusive.
+fn extract_bound(
+    obj: &serde_json::Map<String, Value>,
+    exclusive_key: &str,
+    adjacent_value: Option<f64>,
+) -> Option<NumericBound> {
+    match obj.get(exclusive_key) {
+        Some(Value::Number(n)) => n.as_f64().map(|v| NumericBound {
+            value: v,
+            exclusive: true,
+        }),
+        Some(Value::Bool(true)) => adjacent_value.map(|v| NumericBound {
+            value: v,
+            exclusive: true,
+        }),
+        _ => adjacent_value.map(|v| NumericBound {
+            value: v,
+            exclusive: false,
+        }),
+    }
 }
 
 fn extract_array_constraints(obj: &serde_json::Map<String, Value>, node: &mut SchemaNode) {
@@ -639,6 +695,142 @@ mod tests {
         }"##;
         let ir = c.compile_json("test://non-cyclic.json", src).unwrap();
         assert!(ir.root.properties.contains_key("name"));
+    }
+
+    // ── $ref + siblings (Draft 2020-12) ──────────────────────────────────────
+
+    #[test]
+    fn compile_ref_with_type_sibling_applies_both() {
+        // A schema with $ref AND a sibling `type` keyword should produce an
+        // allOf that enforces both the referenced schema and the type assertion.
+        let mut c = Compiler::new();
+        let src = r##"{
+            "$defs": {
+                "Base": {"minLength": 1}
+            },
+            "$ref": "#/$defs/Base",
+            "type": "string"
+        }"##;
+        let ir = c.compile_json("test://ref-siblings.json", src).unwrap();
+        // The root node must carry an allOf with exactly two members.
+        assert_eq!(
+            ir.root.all_of.len(),
+            2,
+            "expected allOf([ref_node, sibling_node]), got {:?}",
+            ir.root.all_of.len()
+        );
+        // One member should carry the minLength from the $ref target.
+        let has_min_length = ir
+            .root
+            .all_of
+            .iter()
+            .any(|n| n.string.min_length == Some(1));
+        assert!(
+            has_min_length,
+            "allOf should contain the $ref target with minLength"
+        );
+        // One member should carry the type constraint from the sibling.
+        let has_type = ir
+            .root
+            .all_of
+            .iter()
+            .any(|n| n.types.string && !n.types.number);
+        assert!(
+            has_type,
+            "allOf should contain the sibling with type:string"
+        );
+    }
+
+    #[test]
+    fn compile_ref_without_siblings_is_shortcut() {
+        // A $ref with only metadata-style siblings must still take the
+        // short-circuit path (no allOf wrapper).
+        let mut c = Compiler::new();
+        let src = r##"{
+            "$defs": {"S": {"type": "integer"}},
+            "$ref": "#/$defs/S",
+            "$comment": "just a comment"
+        }"##;
+        let ir = c.compile_json("test://ref-no-siblings.json", src).unwrap();
+        assert!(
+            ir.root.all_of.is_empty(),
+            "pure $ref with only metadata siblings must not produce allOf"
+        );
+        assert!(
+            ir.root.types.integer,
+            "root must be lowered from the $ref target"
+        );
+    }
+
+    // ── exclusiveMinimum / exclusiveMaximum boolean ───────────────────────────
+
+    #[test]
+    fn compile_exclusive_minimum_bool_true_converts() {
+        // Draft 4 / OAS 3.0 style: exclusiveMinimum: true with minimum: X
+        // must compile to an exclusive bound at X.
+        let mut c = Compiler::new();
+        let src = r#"{"type":"number","minimum":5.0,"exclusiveMinimum":true}"#;
+        let ir = c.compile_json("test://excl-min.json", src).unwrap();
+        let bound = ir
+            .root
+            .numeric
+            .minimum
+            .as_ref()
+            .expect("minimum bound present");
+        assert!(bound.exclusive, "bound must be exclusive");
+        assert!(
+            (bound.value - 5.0).abs() < f64::EPSILON,
+            "bound value must equal minimum"
+        );
+    }
+
+    #[test]
+    fn compile_exclusive_minimum_bool_false_is_inclusive() {
+        // exclusiveMinimum: false means minimum is non-exclusive; the keyword
+        // is dropped but minimum itself is kept as an inclusive bound.
+        let mut c = Compiler::new();
+        let src = r#"{"type":"number","minimum":3.0,"exclusiveMinimum":false}"#;
+        let ir = c.compile_json("test://excl-min-false.json", src).unwrap();
+        let bound = ir
+            .root
+            .numeric
+            .minimum
+            .as_ref()
+            .expect("minimum bound present");
+        assert!(!bound.exclusive, "bound must be non-exclusive");
+        assert!((bound.value - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn compile_exclusive_maximum_bool_true_converts() {
+        // Same conversion for the upper bound.
+        let mut c = Compiler::new();
+        let src = r#"{"type":"number","maximum":10.0,"exclusiveMaximum":true}"#;
+        let ir = c.compile_json("test://excl-max.json", src).unwrap();
+        let bound = ir
+            .root
+            .numeric
+            .maximum
+            .as_ref()
+            .expect("maximum bound present");
+        assert!(bound.exclusive, "upper bound must be exclusive");
+        assert!((bound.value - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn compile_exclusive_minimum_numeric_passthrough() {
+        // Draft 2020-12 style numeric exclusiveMinimum must pass through unchanged.
+        let mut c = Compiler::new();
+        let src = r#"{"type":"number","exclusiveMinimum":7.5}"#;
+        let ir = c.compile_json("test://excl-min-num.json", src).unwrap();
+        let bound = ir
+            .root
+            .numeric
+            .minimum
+            .as_ref()
+            .expect("minimum bound present");
+        assert!(bound.exclusive);
+        assert!((bound.value - 7.5).abs() < f64::EPSILON);
     }
 
     #[test]
