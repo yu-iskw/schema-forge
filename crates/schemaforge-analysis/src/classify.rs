@@ -3,7 +3,9 @@
 //! Each schema node is classified into one of four representability tiers
 //! that downstream code generators use to decide how to emit Rust types.
 
-use schemaforge_ir::{SchemaNode, TypeSet};
+use schemaforge_ir::{
+    ArrayConstraints, NumericConstraints, ObjectConstraints, SchemaNode, StringConstraints, TypeSet,
+};
 
 /// How well a schema node can be represented as a static Rust type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +60,7 @@ fn is_fully_unconstrained(node: &SchemaNode) -> bool {
     // function is reached, so they do not need an explicit check here.
     node.types == TypeSet::any()
         && node.properties.is_empty()
+        && node.additional_properties.is_none()
         && node.all_of.is_empty()
         && node.not.is_none()
         && node.items.is_none()
@@ -65,6 +68,10 @@ fn is_fully_unconstrained(node: &SchemaNode) -> bool {
         && node.defs.is_empty()
         && node.enum_values.is_none()
         && node.const_value.is_none()
+        && node.string == StringConstraints::default()
+        && node.numeric == NumericConstraints::default()
+        && node.array == ArrayConstraints::default()
+        && node.object == ObjectConstraints::default()
 }
 
 fn classify_union(node: &SchemaNode) -> Representability {
@@ -134,7 +141,7 @@ const fn is_scalar_type(ts: TypeSet) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use schemaforge_ir::ObjectConstraints;
+    use schemaforge_ir::{NumericBound, NumericConstraints, ObjectConstraints, StringConstraints};
     use serde_json::json;
 
     fn string_node() -> SchemaNode {
@@ -334,6 +341,74 @@ mod tests {
             ..SchemaNode::default()
         };
         assert_ne!(classify(&node), Representability::Dynamic);
+    }
+
+    #[test]
+    fn min_length_only_schema_is_not_dynamic() {
+        // A schema with only a minLength constraint is not fully unconstrained
+        // and must not be classified as Dynamic.
+        let node = SchemaNode {
+            string: StringConstraints {
+                min_length: Some(1),
+                ..Default::default()
+            },
+            ..SchemaNode::default()
+        };
+        assert_ne!(
+            classify(&node),
+            Representability::Dynamic,
+            "minLength-only schema must not be classified as Dynamic"
+        );
+    }
+
+    #[test]
+    fn additional_properties_schema_is_not_dynamic() {
+        // A node with additional_properties set carries a constraint and must
+        // not be treated as fully unconstrained.
+        let node = SchemaNode {
+            additional_properties: Some(Box::new(SchemaNode::default())),
+            ..SchemaNode::default()
+        };
+        assert_ne!(
+            classify(&node),
+            Representability::Dynamic,
+            "schema with additional_properties must not be classified as Dynamic"
+        );
+    }
+
+    #[test]
+    fn numeric_minimum_schema_is_not_dynamic() {
+        let node = SchemaNode {
+            numeric: NumericConstraints {
+                minimum: Some(NumericBound {
+                    value: 0.0,
+                    exclusive: false,
+                }),
+                ..Default::default()
+            },
+            ..SchemaNode::default()
+        };
+        assert_ne!(
+            classify(&node),
+            Representability::Dynamic,
+            "schema with minimum constraint must not be classified as Dynamic"
+        );
+    }
+
+    #[test]
+    fn required_fields_schema_is_not_dynamic() {
+        let node = SchemaNode {
+            object: ObjectConstraints {
+                required: vec!["name".to_owned()],
+                ..Default::default()
+            },
+            ..SchemaNode::default()
+        };
+        assert_ne!(
+            classify(&node),
+            Representability::Dynamic,
+            "schema with required fields must not be classified as Dynamic"
+        );
     }
 
     #[test]

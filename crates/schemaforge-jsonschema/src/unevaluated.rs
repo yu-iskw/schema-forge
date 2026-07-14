@@ -1,13 +1,17 @@
 //! Unevaluated vocabulary: `unevaluatedProperties` and `unevaluatedItems`.
 //!
 //! This implementation collects evaluated names/indices from `properties`,
-//! `patternProperties`, `additionalProperties`, `prefixItems`, and `items`
-//! at the current schema level, as well as property names declared in
-//! `allOf`, `anyOf`, and `oneOf` sub-schema `properties` objects.
+//! `patternProperties`, `additionalProperties`, `prefixItems`, `items`, and
+//! `contains` at the current schema level, as well as property names declared
+//! in `allOf`, `anyOf`, `oneOf`, `if`/`then`/`else`, and `dependentSchemas`
+//! sub-schemas.
 //!
 //! For `allOf` the union of every branch's properties is considered evaluated
 //! (all branches must pass).  For `anyOf`/`oneOf` only properties from
 //! branches that actually validated the instance successfully are counted.
+//! For `if`/`then`/`else`, properties from the matching branch are included.
+//! For `dependentSchemas`, properties from each triggered dependent schema
+//! are included when its trigger property is present in the instance.
 
 use std::collections::HashSet;
 
@@ -80,6 +84,9 @@ fn is_property_evaluated(
 ///   branch are evaluated regardless of whether the instance has them.
 /// - `anyOf` / `oneOf`: only properties from branches that actually validate
 ///   the current instance successfully are counted as evaluated.
+/// - `if`/`then`/`else`: properties from the branch that matches the condition.
+/// - `dependentSchemas`: properties from each triggered schema when its trigger
+///   key is present in the instance.
 ///
 /// If a branch contains `$ref` the referenced schema's `properties` are also
 /// collected (local fragment references only).
@@ -109,7 +116,57 @@ fn applicator_branch_evaluated_properties(
         }
     }
 
+    // if/then/else: include properties from the active branch.
+    collect_if_then_else_props(obj, instance, ctx, &mut evaluated);
+
+    // dependentSchemas: include properties when the trigger key is present.
+    collect_dependent_schemas_props(obj, instance, ctx, &mut evaluated);
+
     evaluated
+}
+
+/// Collect property names from `if`, and from `then` when `if` validates or
+/// from `else` when `if` fails.
+///
+/// The `if` schema always runs against the instance, so its declared
+/// `properties` are always considered evaluated (Draft 2020-12 §11.2).
+fn collect_if_then_else_props(
+    obj: &Map<String, Value>,
+    instance: &Value,
+    ctx: &ValidationContext<'_>,
+    evaluated: &mut HashSet<String>,
+) {
+    let Some(if_schema) = obj.get("if") else {
+        return;
+    };
+    // `if` always evaluates, regardless of outcome.
+    collect_branch_props(if_schema, evaluated, ctx);
+
+    let condition_met = validate_schema(if_schema, instance, "", ctx).is_valid();
+    let branch_key = if condition_met { "then" } else { "else" };
+    if let Some(branch) = obj.get(branch_key) {
+        collect_branch_props(branch, evaluated, ctx);
+    }
+}
+
+/// Collect property names from `dependentSchemas` entries whose trigger
+/// property is present in `instance`.
+fn collect_dependent_schemas_props(
+    obj: &Map<String, Value>,
+    instance: &Value,
+    ctx: &ValidationContext<'_>,
+    evaluated: &mut HashSet<String>,
+) {
+    let (Some(Value::Object(dep_schemas)), Value::Object(inst)) =
+        (obj.get("dependentSchemas"), instance)
+    else {
+        return;
+    };
+    for (trigger, dep_schema) in dep_schemas {
+        if inst.contains_key(trigger) {
+            collect_branch_props(dep_schema, evaluated, ctx);
+        }
+    }
 }
 
 /// Maximum depth for recursive `$ref` chain following when collecting branch properties.
@@ -193,23 +250,116 @@ fn apply_unevaluated_items(
     let (Some(ui_schema), Value::Array(items)) = (obj.get("unevaluatedItems"), instance) else {
         return;
     };
-    let first_unevaluated = first_unevaluated_index(obj, items.len());
-    for (i, item) in items.iter().enumerate().skip(first_unevaluated) {
+
+    // Collect evaluation context from the schema and its allOf/$ref branches.
+    let (effective_prefix_len, has_items) = items_eval_range(obj, ctx);
+    let contains_schema = obj.get("contains");
+
+    for (i, item) in items.iter().enumerate() {
+        if is_item_evaluated(
+            i,
+            effective_prefix_len,
+            has_items,
+            contains_schema,
+            item,
+            ctx,
+        ) {
+            continue;
+        }
         let item_path = format!("{path}/{i}");
         out.merge(validate_schema(ui_schema, item, &item_path, ctx));
     }
 }
 
-fn first_unevaluated_index(obj: &Map<String, Value>, total: usize) -> usize {
-    let prefix_len = obj
+/// Return `(effective_prefix_len, has_items)` by merging the direct schema
+/// keywords with any `items`/`prefixItems` found inside `allOf` branches or
+/// through `$ref` chains (analogous to property collection for
+/// `unevaluatedProperties`).
+fn items_eval_range(obj: &Map<String, Value>, ctx: &ValidationContext<'_>) -> (usize, bool) {
+    let direct_prefix = obj
         .get("prefixItems")
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
-    if obj.contains_key("items") {
-        total
-    } else {
-        prefix_len
+    let direct_items = obj.contains_key("items");
+
+    let mut branch_prefix = 0usize;
+    let mut branch_items = false;
+    if let Some(Value::Array(branches)) = obj.get("allOf") {
+        for branch in branches {
+            collect_branch_items_eval(branch, &mut branch_prefix, &mut branch_items, ctx, 0);
+        }
     }
+
+    (
+        direct_prefix.max(branch_prefix),
+        direct_items || branch_items,
+    )
+}
+
+/// Recursively collect `prefixItems` length and `items` presence from a branch
+/// schema, following `$ref` and nested `allOf`, up to `MAX_BRANCH_REF_DEPTH`.
+fn collect_branch_items_eval(
+    branch: &Value,
+    max_prefix: &mut usize,
+    has_items: &mut bool,
+    ctx: &ValidationContext<'_>,
+    depth: usize,
+) {
+    if depth > MAX_BRANCH_REF_DEPTH {
+        return;
+    }
+    let Value::Object(obj) = branch else {
+        return;
+    };
+    if obj.contains_key("items") {
+        *has_items = true;
+    }
+    if let Some(prefix_len) = obj
+        .get("prefixItems")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+    {
+        *max_prefix = (*max_prefix).max(prefix_len);
+    }
+    // Follow $ref one hop.
+    if let Some(Value::String(ref_uri)) = obj.get("$ref")
+        && let Some(target) = crate::core::resolve_ref(ref_uri, ctx)
+    {
+        collect_branch_items_eval(target, max_prefix, has_items, ctx, depth + 1);
+    }
+    // Recurse into nested allOf (all branches must pass).
+    if let Some(Value::Array(all_of)) = obj.get("allOf") {
+        for sub in all_of {
+            collect_branch_items_eval(sub, max_prefix, has_items, ctx, depth + 1);
+        }
+    }
+}
+
+/// Return `true` when the item at `index` is considered evaluated and therefore
+/// should not be validated by `unevaluatedItems`.
+///
+/// An item is evaluated when:
+/// - its index falls within the `prefixItems` range, OR
+/// - an `items` keyword is present (evaluates all remaining items), OR
+/// - the item validates successfully against the `contains` schema.
+fn is_item_evaluated(
+    index: usize,
+    prefix_len: usize,
+    has_items: bool,
+    contains_schema: Option<&Value>,
+    item: &Value,
+    ctx: &ValidationContext<'_>,
+) -> bool {
+    if index < prefix_len {
+        return true;
+    }
+    if has_items {
+        return true;
+    }
+    if let Some(contains) = contains_schema {
+        return validate_schema(contains, item, "", ctx).is_valid();
+    }
+    false
 }
 
 #[cfg(test)]
@@ -414,6 +564,138 @@ mod tests {
         assert!(
             !valid(&s, &json!({"name": "Alice", "extra": 1})),
             "unevaluated extra property must still be rejected"
+        );
+    }
+
+    // ── unevaluatedItems + contains ───────────────────────────────────────────
+
+    #[test]
+    fn unevaluated_items_contains_evaluates_matching_items() {
+        // When contains is present, items matching the contains schema are
+        // considered evaluated and must not be rejected by unevaluatedItems:false.
+        let s = json!({
+            "contains": {"type": "string"},
+            "unevaluatedItems": false
+        });
+        // A string item matches contains → evaluated, not rejected.
+        assert!(
+            valid(&s, &json!(["hello"])),
+            "item matching contains must be treated as evaluated"
+        );
+        // A number does not match contains → unevaluated, rejected.
+        assert!(
+            !valid(&s, &json!(["hello", 42])),
+            "item not matching contains must be rejected by unevaluatedItems"
+        );
+    }
+
+    #[test]
+    fn unevaluated_items_allof_items_evaluates_all() {
+        // An allOf branch with `items` means all items after any prefixItems
+        // are evaluated by that branch; unevaluatedItems should not flag them.
+        let s = json!({
+            "allOf": [{"items": {"type": "integer"}}],
+            "unevaluatedItems": false
+        });
+        assert!(
+            valid(&s, &json!([1, 2, 3])),
+            "items evaluated by allOf branch items keyword must not be rejected"
+        );
+        // The allOf branch still validates — integers only.
+        assert!(
+            !valid(&s, &json!(["not-int"])),
+            "allOf items validation still applies"
+        );
+    }
+
+    #[test]
+    fn unevaluated_items_allof_prefix_items_evaluates_prefix() {
+        // An allOf branch with prefixItems evaluates the covered prefix.
+        let s = json!({
+            "allOf": [{"prefixItems": [{"type": "string"}]}],
+            "unevaluatedItems": false
+        });
+        // Index 0 covered by allOf prefixItems → evaluated.
+        assert!(
+            valid(&s, &json!(["hello"])),
+            "item in allOf prefixItems range must not be rejected"
+        );
+        // Index 1 is beyond allOf prefixItems and there's no items → rejected.
+        assert!(
+            !valid(&s, &json!(["hello", 42])),
+            "item beyond allOf prefixItems range must still be rejected"
+        );
+    }
+
+    // ── unevaluatedProperties + if/then/else ──────────────────────────────────
+
+    #[test]
+    fn unevaluated_properties_then_branch_evaluated_when_if_matches() {
+        // When `if` validates, properties declared in `then` are considered
+        // evaluated and must not be rejected by unevaluatedProperties.
+        let s = json!({
+            "if": {"properties": {"type": {"const": "user"}}, "required": ["type"]},
+            "then": {"properties": {"name": {"type": "string"}}},
+            "unevaluatedProperties": false
+        });
+        assert!(
+            valid(&s, &json!({"type": "user", "name": "Alice"})),
+            "properties from then must be evaluated when if matches"
+        );
+        assert!(
+            !valid(&s, &json!({"type": "user", "name": "Alice", "extra": 1})),
+            "extra property not in then must still be rejected"
+        );
+    }
+
+    #[test]
+    fn unevaluated_properties_else_branch_evaluated_when_if_fails() {
+        // When `if` fails, properties from `else` are evaluated.
+        let s = json!({
+            "if": {"properties": {"kind": {"const": "admin"}}, "required": ["kind"]},
+            "else": {"properties": {"role": {"type": "string"}}},
+            "unevaluatedProperties": false
+        });
+        // `if` fails (kind absent) → else applies → `role` is evaluated.
+        assert!(
+            valid(&s, &json!({"role": "editor"})),
+            "property from else must be evaluated when if fails"
+        );
+        assert!(
+            !valid(&s, &json!({"role": "editor", "extra": 1})),
+            "extra property not in else must still be rejected"
+        );
+    }
+
+    #[test]
+    fn unevaluated_properties_dependent_schemas_props_evaluated_when_triggered() {
+        // Properties declared inside a triggered dependentSchemas entry must be
+        // considered evaluated.  The trigger key itself must appear in the
+        // top-level `properties` so it is independently evaluated.
+        let s = json!({
+            "properties": {
+                "credit_card": {"type": "string"}
+            },
+            "dependentSchemas": {
+                "credit_card": {
+                    "properties": {"billing_address": {"type": "string"}}
+                }
+            },
+            "unevaluatedProperties": false
+        });
+        // `credit_card` is present (evaluated via top-level properties) →
+        // its dependentSchema is triggered → `billing_address` is evaluated.
+        assert!(
+            valid(
+                &s,
+                &json!({"credit_card": "1234", "billing_address": "123 Main"})
+            ),
+            "billing_address must be evaluated via triggered dependentSchema"
+        );
+        // Without the trigger key, billing_address is NOT evaluated.
+        assert!(
+            !valid(&s, &json!({"billing_address": "123 Main"})),
+            "billing_address must be rejected when trigger is absent"
         );
     }
 }
