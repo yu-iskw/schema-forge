@@ -79,6 +79,16 @@ pub enum CompileError {
         /// The JSON type name of the unexpected value.
         kind: String,
     },
+    /// A schema keyword is recognised but not yet lowered by the compiler.
+    ///
+    /// The compiler is fail-closed: any applicator or assertion keyword whose
+    /// semantics are not yet represented in the IR causes compilation to abort
+    /// rather than silently dropping the constraint.
+    #[error("unsupported schema keyword `{keyword}`")]
+    UnsupportedKeyword {
+        /// The name of the unsupported keyword.
+        keyword: String,
+    },
 }
 
 /// Options that control the compiler's behaviour.
@@ -258,6 +268,36 @@ fn lower_local_ref(ref_str: &str, ctx: &mut LowerCtx<'_>) -> Result<SchemaNode, 
     result
 }
 
+/// Schema keywords that are recognised by JSON Schema but are not yet lowered
+/// by the compiler into IR.
+///
+/// The compiler is fail-closed: encountering any of these keywords during
+/// object-schema lowering returns [`CompileError::UnsupportedKeyword`] rather
+/// than silently dropping semantics-bearing constraints.
+const UNSUPPORTED_KEYWORDS: &[&str] = &[
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "patternProperties",
+    "if",
+    "then",
+    "else",
+    "dependentSchemas",
+    "propertyNames",
+    "contains",
+];
+
+/// Return an error if `obj` contains any keyword that the compiler cannot yet lower.
+fn check_unsupported_keywords(obj: &serde_json::Map<String, Value>) -> Result<(), CompileError> {
+    for &keyword in UNSUPPORTED_KEYWORDS {
+        if obj.contains_key(keyword) {
+            return Err(CompileError::UnsupportedKeyword {
+                keyword: keyword.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Schema keywords that do not add applicator or assertion constraints and
 /// can be ignored when deciding whether a `$ref` has meaningful siblings.
 const REF_PASSTHROUGH_KEYS: &[&str] = &[
@@ -321,6 +361,7 @@ fn lower_object_keywords(
     obj: &serde_json::Map<String, Value>,
     ctx: &mut LowerCtx<'_>,
 ) -> Result<SchemaNode, CompileError> {
+    check_unsupported_keywords(obj)?;
     let mut node = SchemaNode::default();
     extract_types(obj, &mut node);
     extract_metadata(obj, &mut node);
@@ -831,6 +872,70 @@ mod tests {
             .expect("minimum bound present");
         assert!(bound.exclusive);
         assert!((bound.value - 7.5).abs() < f64::EPSILON);
+    }
+
+    // ── Unsupported keyword fail-closed ───────────────────────────────────────
+
+    fn assert_unsupported(keyword: &str, schema_json: &str) {
+        let mut c = Compiler::new();
+        let result = c.compile_json("test://unsupported.json", schema_json);
+        assert!(
+            matches!(result, Err(CompileError::UnsupportedKeyword { keyword: ref k }) if k == keyword),
+            "expected UnsupportedKeyword({keyword}) for schema {schema_json}, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn compile_unevaluated_properties_is_unsupported() {
+        assert_unsupported(
+            "unevaluatedProperties",
+            r#"{"type":"object","unevaluatedProperties":false}"#,
+        );
+    }
+
+    #[test]
+    fn compile_unevaluated_items_is_unsupported() {
+        assert_unsupported(
+            "unevaluatedItems",
+            r#"{"type":"array","unevaluatedItems":false}"#,
+        );
+    }
+
+    #[test]
+    fn compile_pattern_properties_is_unsupported() {
+        assert_unsupported(
+            "patternProperties",
+            r#"{"type":"object","patternProperties":{"^x-":{"type":"string"}}}"#,
+        );
+    }
+
+    #[test]
+    fn compile_if_is_unsupported() {
+        assert_unsupported("if", r#"{"if":{"type":"string"},"then":{"minLength":1}}"#);
+    }
+
+    #[test]
+    fn compile_dependent_schemas_is_unsupported() {
+        assert_unsupported(
+            "dependentSchemas",
+            r#"{"type":"object","dependentSchemas":{"a":{"required":["b"]}}}"#,
+        );
+    }
+
+    #[test]
+    fn compile_property_names_is_unsupported() {
+        assert_unsupported(
+            "propertyNames",
+            r#"{"type":"object","propertyNames":{"maxLength":5}}"#,
+        );
+    }
+
+    #[test]
+    fn compile_contains_is_unsupported() {
+        assert_unsupported(
+            "contains",
+            r#"{"type":"array","contains":{"type":"integer"}}"#,
+        );
     }
 
     #[test]
