@@ -764,6 +764,7 @@ dependencies = [
  "schemaforge-compiler",
  "schemaforge-ir",
  "schemaforge-jsonschema",
+ "serde",
  "serde_json",
  "thiserror",
 ]
@@ -790,6 +791,7 @@ dependencies = [
  "schemaforge-compiler",
  "schemaforge-ir",
  "schemaforge-jsonschema",
+ "serde",
  "serde_json",
  "thiserror",
 ]

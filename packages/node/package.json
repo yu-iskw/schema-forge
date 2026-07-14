@@ -1,0 +1,39 @@
+{
+  "name": "@schemaforge/node",
+  "version": "0.1.0",
+  "description": "Node.js bindings for the Schemaforge JSON Schema compiler",
+  "license": "Apache-2.0",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "json-schema",
+    "validation",
+    "schemaforge",
+    "napi"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "build": "napi build --platform --release --features napi",
+    "test": "node --test tests/*.test.js 2>/dev/null || node tests/run.js"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0"
+  },
+  "napi": {
+    "name": "schemaforge-node",
+    "triples": {
+      "defaults": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yu-iskw/rust-project-template"
+  }
+}
