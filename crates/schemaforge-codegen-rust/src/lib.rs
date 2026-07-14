@@ -501,20 +501,20 @@ fn to_pascal_case(s: &str) -> String {
 /// Escape a string for safe embedding inside a Rust string literal used in
 /// `#[serde(rename = "...")]`.
 ///
-/// Every ASCII character that is not an alphanumeric character, `-`, or `_`
-/// is encoded as `\u{NNNN}`.  This prevents both premature string termination
-/// (`"`) and accidental inclusion of recognisable Rust code fragments in the
-/// raw generated source text (e.g. `pub fn`, `; evil()`, `\n` newlines).
-///
-/// Non-ASCII Unicode scalars pass through unchanged because they cannot form
-/// ASCII keyword sequences and are valid in Rust string literals.
+/// Escapes `\`, `"`, newline, carriage-return, and tab so the resulting bytes
+/// cannot break out of the attribute string literal.  Every other Unicode
+/// scalar is passed through unchanged because Rust string literals accept
+/// arbitrary Unicode.
 fn escape_for_serde_rename(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 2);
+    let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
-        if ch.is_ascii() && !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' {
-            write!(out, "\\u{{{:04x}}}", ch as u32).unwrap_or(());
-        } else {
-            out.push(ch);
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
         }
     }
     out
@@ -797,9 +797,9 @@ mod tests {
             .lines()
             .any(|l| l.trim_start().starts_with("pub fn evil"));
         assert!(!injected, "injection detected in generated code:\n{code}");
-        // The serde rename attribute must be present with the quote unicode-escaped.
+        // The serde rename attribute must be present with the double-quote escaped as `\"`.
         assert!(
-            code.contains(r#"serde(rename = "field\u{0022}"#),
+            code.contains(r#"serde(rename = "field\""#),
             "expected escaped serde rename attribute in:\n{code}"
         );
     }
