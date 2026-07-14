@@ -1,0 +1,26 @@
+[package]
+name = "schemaforge-jsonschema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "JSON Schema Draft 2020-12 validator for Schemaforge."
+
+[dependencies]
+schemaforge-source.workspace = true
+schemaforge-diagnostics.workspace = true
+schemaforge-dialect.workspace = true
+schemaforge-resolver.workspace = true
+schemaforge-formats.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+indexmap.workspace = true
+
+[lints]
+workspace = true
