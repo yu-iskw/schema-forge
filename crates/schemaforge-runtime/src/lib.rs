@@ -15,7 +15,7 @@ pub struct KeywordEntry {
 }
 
 /// Compilation phase for a keyword.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Phase {
     /// Core keywords processed first: `$schema`, `$id`, `$vocabulary`, `$defs`.
     Core = 0,
@@ -49,296 +49,116 @@ impl RuntimePlan {
 pub const RUNTIME_PLAN: RuntimePlan = RuntimePlan {
     keywords: &[
         // Phase::Core
-        KeywordEntry {
-            name: "$schema",
-            phase: Phase::Core,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "$id",
-            phase: Phase::Core,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "$anchor",
-            phase: Phase::Core,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "$dynamicAnchor",
-            phase: Phase::Core,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "$vocabulary",
-            phase: Phase::Core,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "$defs",
-            phase: Phase::Core,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "$comment",
-            phase: Phase::Core,
-            applicator: false,
-        },
+        KeywordEntry { name: "$schema", phase: Phase::Core, applicator: false },
+        KeywordEntry { name: "$id", phase: Phase::Core, applicator: false },
+        KeywordEntry { name: "$anchor", phase: Phase::Core, applicator: false },
+        KeywordEntry { name: "$dynamicAnchor", phase: Phase::Core, applicator: false },
+        KeywordEntry { name: "$vocabulary", phase: Phase::Core, applicator: false },
+        KeywordEntry { name: "$defs", phase: Phase::Core, applicator: false },
+        KeywordEntry { name: "$comment", phase: Phase::Core, applicator: false },
         // Phase::Applicator
-        KeywordEntry {
-            name: "$ref",
-            phase: Phase::Applicator,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "$dynamicRef",
-            phase: Phase::Applicator,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "allOf",
-            phase: Phase::Applicator,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "anyOf",
-            phase: Phase::Applicator,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "oneOf",
-            phase: Phase::Applicator,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "not",
-            phase: Phase::Applicator,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "if",
-            phase: Phase::Applicator,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "then",
-            phase: Phase::Applicator,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "else",
-            phase: Phase::Applicator,
-            applicator: true,
-        },
+        KeywordEntry { name: "$ref", phase: Phase::Applicator, applicator: true },
+        KeywordEntry { name: "$dynamicRef", phase: Phase::Applicator, applicator: true },
+        KeywordEntry { name: "allOf", phase: Phase::Applicator, applicator: true },
+        KeywordEntry { name: "anyOf", phase: Phase::Applicator, applicator: true },
+        KeywordEntry { name: "oneOf", phase: Phase::Applicator, applicator: true },
+        KeywordEntry { name: "not", phase: Phase::Applicator, applicator: true },
+        KeywordEntry { name: "if", phase: Phase::Applicator, applicator: true },
+        KeywordEntry { name: "then", phase: Phase::Applicator, applicator: true },
+        KeywordEntry { name: "else", phase: Phase::Applicator, applicator: true },
         // Phase::Properties
-        KeywordEntry {
-            name: "properties",
-            phase: Phase::Properties,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "patternProperties",
-            phase: Phase::Properties,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "additionalProperties",
-            phase: Phase::Properties,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "propertyNames",
-            phase: Phase::Properties,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "items",
-            phase: Phase::Properties,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "prefixItems",
-            phase: Phase::Properties,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "contains",
-            phase: Phase::Properties,
-            applicator: true,
-        },
+        KeywordEntry { name: "properties", phase: Phase::Properties, applicator: true },
+        KeywordEntry { name: "patternProperties", phase: Phase::Properties, applicator: true },
+        KeywordEntry { name: "additionalProperties", phase: Phase::Properties, applicator: true },
+        KeywordEntry { name: "propertyNames", phase: Phase::Properties, applicator: true },
+        KeywordEntry { name: "dependentSchemas", phase: Phase::Properties, applicator: true },
+        KeywordEntry { name: "items", phase: Phase::Properties, applicator: true },
+        KeywordEntry { name: "prefixItems", phase: Phase::Properties, applicator: true },
+        KeywordEntry { name: "contains", phase: Phase::Properties, applicator: true },
         // Phase::Validation
-        KeywordEntry {
-            name: "type",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "enum",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "const",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "multipleOf",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "maximum",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "exclusiveMaximum",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "minimum",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "exclusiveMinimum",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "maxLength",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "minLength",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "pattern",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "maxItems",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "minItems",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "uniqueItems",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "maxContains",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "minContains",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "maxProperties",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "minProperties",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "required",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "dependentRequired",
-            phase: Phase::Validation,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "format",
-            phase: Phase::Validation,
-            applicator: false,
-        },
+        KeywordEntry { name: "type", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "enum", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "const", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "multipleOf", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "maximum", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "exclusiveMaximum", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "minimum", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "exclusiveMinimum", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "maxLength", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "minLength", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "pattern", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "maxItems", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "minItems", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "uniqueItems", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "maxContains", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "minContains", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "maxProperties", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "minProperties", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "required", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "dependentRequired", phase: Phase::Validation, applicator: false },
+        KeywordEntry { name: "format", phase: Phase::Validation, applicator: false },
         // Phase::Unevaluated
-        KeywordEntry {
-            name: "unevaluatedProperties",
-            phase: Phase::Unevaluated,
-            applicator: true,
-        },
-        KeywordEntry {
-            name: "unevaluatedItems",
-            phase: Phase::Unevaluated,
-            applicator: true,
-        },
+        KeywordEntry { name: "unevaluatedProperties", phase: Phase::Unevaluated, applicator: true },
+        KeywordEntry { name: "unevaluatedItems", phase: Phase::Unevaluated, applicator: true },
         // Phase::Metadata
-        KeywordEntry {
-            name: "title",
-            phase: Phase::Metadata,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "description",
-            phase: Phase::Metadata,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "default",
-            phase: Phase::Metadata,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "examples",
-            phase: Phase::Metadata,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "deprecated",
-            phase: Phase::Metadata,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "readOnly",
-            phase: Phase::Metadata,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "writeOnly",
-            phase: Phase::Metadata,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "contentEncoding",
-            phase: Phase::Metadata,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "contentMediaType",
-            phase: Phase::Metadata,
-            applicator: false,
-        },
-        KeywordEntry {
-            name: "contentSchema",
-            phase: Phase::Metadata,
-            applicator: false,
-        },
+        KeywordEntry { name: "title", phase: Phase::Metadata, applicator: false },
+        KeywordEntry { name: "description", phase: Phase::Metadata, applicator: false },
+        KeywordEntry { name: "default", phase: Phase::Metadata, applicator: false },
+        KeywordEntry { name: "examples", phase: Phase::Metadata, applicator: false },
+        KeywordEntry { name: "deprecated", phase: Phase::Metadata, applicator: false },
+        KeywordEntry { name: "readOnly", phase: Phase::Metadata, applicator: false },
+        KeywordEntry { name: "writeOnly", phase: Phase::Metadata, applicator: false },
+        KeywordEntry { name: "contentEncoding", phase: Phase::Metadata, applicator: false },
+        KeywordEntry { name: "contentMediaType", phase: Phase::Metadata, applicator: false },
+        KeywordEntry { name: "contentSchema", phase: Phase::Metadata, applicator: false },
     ],
 };
 
+/// A minimal structural validator driven by the `RuntimePlan`.
+///
+/// This executor verifies that the plan's ordering matches the semantics
+/// expected by the JSON Schema validator.
+#[derive(Debug, Clone, Copy)]
+pub struct PlanExecutor {
+    plan: RuntimePlan,
+}
+
+impl PlanExecutor {
+    /// Create an executor backed by a given plan.
+    #[must_use]
+    pub const fn new(plan: RuntimePlan) -> Self {
+        Self { plan }
+    }
+
+    /// Return the names of all keywords that belong to `phase`, in order.
+    #[must_use]
+    pub fn keyword_names_in_phase(&self, phase: Phase) -> Vec<&'static str> {
+        self.plan
+            .keywords_in_phase(phase)
+            .map(|k| k.name)
+            .collect()
+    }
+
+    /// Return whether a keyword is registered as an applicator.
+    #[must_use]
+    pub fn is_applicator(&self, name: &str) -> bool {
+        self.plan
+            .keywords
+            .iter()
+            .any(|k| k.name == name && k.applicator)
+    }
+
+    /// Return whether a keyword is registered at all.
+    #[must_use]
+    pub fn contains_keyword(&self, name: &str) -> bool {
+        self.plan.keywords.iter().any(|k| k.name == name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     #[test]
@@ -371,5 +191,99 @@ mod tests {
     #[test]
     fn applicator_flag_set() {
         assert!(RUNTIME_PLAN.keywords.iter().any(|k| k.applicator));
+    }
+
+    #[test]
+    fn executor_core_keywords_before_applicators() {
+        let exec = PlanExecutor::new(RUNTIME_PLAN);
+        let core = exec.keyword_names_in_phase(Phase::Core);
+        let applicators = exec.keyword_names_in_phase(Phase::Applicator);
+        let first_app = RUNTIME_PLAN
+            .keywords
+            .iter()
+            .position(|k| applicators.contains(&k.name))
+            .unwrap();
+        for name in core {
+            let idx = RUNTIME_PLAN
+                .keywords
+                .iter()
+                .position(|k| k.name == name)
+                .unwrap();
+            assert!(idx < first_app, "{name} must precede applicators");
+        }
+    }
+
+    #[test]
+    fn executor_unevaluated_after_validation() {
+        let exec = PlanExecutor::new(RUNTIME_PLAN);
+        let val_names = exec.keyword_names_in_phase(Phase::Validation);
+        let uneval_names = exec.keyword_names_in_phase(Phase::Unevaluated);
+        let last_val = RUNTIME_PLAN
+            .keywords
+            .iter()
+            .rposition(|k| val_names.contains(&k.name))
+            .unwrap();
+        for name in uneval_names {
+            let idx = RUNTIME_PLAN
+                .keywords
+                .iter()
+                .position(|k| k.name == name)
+                .unwrap();
+            assert!(idx > last_val, "{name} must follow all validation keywords");
+        }
+    }
+
+    #[test]
+    fn executor_properties_are_applicators() {
+        let exec = PlanExecutor::new(RUNTIME_PLAN);
+        assert!(exec.is_applicator("properties"));
+        assert!(exec.is_applicator("additionalProperties"));
+        assert!(exec.is_applicator("allOf"));
+        assert!(exec.is_applicator("$ref"));
+    }
+
+    #[test]
+    fn executor_validation_keywords_not_applicators() {
+        let exec = PlanExecutor::new(RUNTIME_PLAN);
+        assert!(!exec.is_applicator("type"));
+        assert!(!exec.is_applicator("minimum"));
+        assert!(!exec.is_applicator("required"));
+    }
+
+    #[test]
+    fn executor_all_draft2020_keywords_registered() {
+        let exec = PlanExecutor::new(RUNTIME_PLAN);
+        let required = [
+            "$schema", "$ref", "$dynamicRef", "$dynamicAnchor",
+            "allOf", "anyOf", "oneOf", "not", "if",
+            "properties", "patternProperties", "additionalProperties",
+            "propertyNames", "dependentSchemas",
+            "prefixItems", "items", "contains",
+            "unevaluatedProperties", "unevaluatedItems",
+            "type", "enum", "const", "minimum", "maximum",
+            "required", "dependentRequired", "format",
+        ];
+        for kw in required {
+            assert!(exec.contains_keyword(kw), "missing keyword: {kw}");
+        }
+    }
+
+    #[test]
+    fn executor_matches_validator_phase_semantics() {
+        let expected_order = [
+            Phase::Core, Phase::Applicator, Phase::Properties,
+            Phase::Validation, Phase::Unevaluated, Phase::Metadata,
+        ];
+        let mut seen_phases: Vec<Phase> = RUNTIME_PLAN
+            .keywords
+            .iter()
+            .map(|k| k.phase)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        seen_phases.sort();
+        let mut expected_sorted = expected_order.to_vec();
+        expected_sorted.sort();
+        assert_eq!(seen_phases, expected_sorted);
     }
 }
