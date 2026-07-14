@@ -284,6 +284,20 @@ const UNSUPPORTED_KEYWORDS: &[&str] = &[
     "dependentSchemas",
     "propertyNames",
     "contains",
+    // Dynamic reference applicators (Draft 2020-12) — not yet lowered.
+    // $dynamicRef is an applicator with runtime resolution semantics.
+    // $dynamicAnchor is its declaration counterpart; both are rejected for
+    // honesty until dynamic scoping is represented in the IR.
+    "$dynamicRef",
+    "$dynamicAnchor",
+    // Property dependency assertions (Draft 2019-09 / 2020-12).
+    "dependentRequired",
+    // Content annotations — not assertions in standard validators, but they
+    // carry semantics (media type, encoding, schema) that the IR cannot yet
+    // represent faithfully.
+    "contentSchema",
+    "contentMediaType",
+    "contentEncoding",
 ];
 
 /// Return an error if `obj` contains any keyword that the compiler cannot yet lower.
@@ -935,6 +949,54 @@ mod tests {
         assert_unsupported(
             "contains",
             r#"{"type":"array","contains":{"type":"integer"}}"#,
+        );
+    }
+
+    #[test]
+    fn compile_dynamic_ref_is_unsupported() {
+        assert_unsupported(
+            "$dynamicRef",
+            r##"{"$dynamicRef":"#items","type":"array"}"##,
+        );
+    }
+
+    #[test]
+    fn compile_dynamic_anchor_is_unsupported() {
+        assert_unsupported(
+            "$dynamicAnchor",
+            r#"{"$dynamicAnchor":"items","type":"array"}"#,
+        );
+    }
+
+    #[test]
+    fn compile_dependent_required_is_unsupported() {
+        assert_unsupported(
+            "dependentRequired",
+            r#"{"type":"object","dependentRequired":{"credit_card":["billing_address"]}}"#,
+        );
+    }
+
+    #[test]
+    fn compile_content_schema_is_unsupported() {
+        assert_unsupported(
+            "contentSchema",
+            r#"{"type":"string","contentSchema":{"type":"object"}}"#,
+        );
+    }
+
+    #[test]
+    fn compile_content_media_type_is_unsupported() {
+        assert_unsupported(
+            "contentMediaType",
+            r#"{"type":"string","contentMediaType":"application/json"}"#,
+        );
+    }
+
+    #[test]
+    fn compile_content_encoding_is_unsupported() {
+        assert_unsupported(
+            "contentEncoding",
+            r#"{"type":"string","contentEncoding":"base64"}"#,
         );
     }
 
