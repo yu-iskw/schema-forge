@@ -31,7 +31,7 @@ fn apply_unevaluated_properties(
     else {
         return;
     };
-    let explicit = collect_explicit_property_names(obj);
+    let explicit = crate::collect_known_property_names(obj);
     let has_additional = obj.contains_key("additionalProperties");
     for (key, value) in inst {
         if is_property_evaluated(key, &explicit, obj, has_additional, ctx) {
@@ -55,22 +55,7 @@ fn is_property_evaluated(
     if has_additional {
         return true;
     }
-    obj.get("patternProperties")
-        .and_then(Value::as_object)
-        .is_some_and(|pp| {
-            pp.keys().any(|pat| {
-                ctx.patterns
-                    .get(pat.as_str())
-                    .is_some_and(|re| re.is_match(key))
-            })
-        })
-}
-
-fn collect_explicit_property_names(obj: &Map<String, Value>) -> Vec<&str> {
-    obj.get("properties")
-        .and_then(Value::as_object)
-        .map(|p| p.keys().map(String::as_str).collect())
-        .unwrap_or_default()
+    crate::applicator::matches_any_pattern_property(obj, key, ctx)
 }
 
 fn apply_unevaluated_items(

@@ -5,7 +5,9 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use indexmap::IndexMap;
-use schemaforge_analysis::{DispatchStrategy, Representability, analyse, explain_schema};
+use schemaforge_analysis::{
+    DispatchStrategy, Representability, analyse, explain_schema, pick_variants,
+};
 use schemaforge_ir::SchemaNode;
 
 use crate::names::{
@@ -249,11 +251,7 @@ fn emit_enum(
     emit_derives(options, buf)?;
     buf.push_str("#[serde(untagged)]\n");
     writeln!(buf, "pub enum {name} {{")?;
-    let variants = if node.one_of.is_empty() {
-        &node.any_of
-    } else {
-        &node.one_of
-    };
+    let variants = pick_variants(node);
     for (i, _) in variants.iter().enumerate() {
         writeln!(buf, "    Variant{i}(serde_json::Value),")?;
     }

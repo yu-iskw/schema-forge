@@ -415,10 +415,13 @@ fn load_from_path(uri: &str, base_dir: Option<&Path>) -> Result<Value, ResolveEr
 
     // Re-canonicalize the path now that the file is open and re-verify the
     // jail.  Any symlink that was swapped in after uri_to_jailed_path but
-    // before File::open will be caught here.
-    if let Some(base) = base_dir
-        && let Ok(canonical) = std::fs::canonicalize(&path)
-    {
+    // before File::open will be caught here.  Fail-closed: if canonicalize
+    // fails (e.g. the file was deleted or replaced after open), reject the
+    // request rather than skipping the jail check.
+    if let Some(base) = base_dir {
+        let canonical = std::fs::canonicalize(&path).map_err(|_| ResolveError::PathEscaped {
+            path: path.display().to_string(),
+        })?;
         let canonical_base =
             std::fs::canonicalize(base).unwrap_or_else(|_| lexically_normalize(base));
         if !canonical.starts_with(&canonical_base) {

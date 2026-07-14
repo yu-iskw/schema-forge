@@ -276,6 +276,17 @@ fn register_pattern(
     }
 }
 
+/// Return the set of property names explicitly declared in `properties`.
+///
+/// Shared by the applicator (`additionalProperties`) and unevaluated
+/// (`unevaluatedProperties`) vocabularies.
+pub(crate) fn collect_known_property_names(obj: &Map<String, Value>) -> Vec<&str> {
+    obj.get("properties")
+        .and_then(Value::as_object)
+        .map(|p| p.keys().map(String::as_str).collect())
+        .unwrap_or_default()
+}
+
 /// Shared context passed through recursive validation calls.
 pub(crate) struct ValidationContext<'a> {
     pub(crate) registry: &'a HashMap<String, Value>,

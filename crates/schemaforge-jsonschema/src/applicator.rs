@@ -189,7 +189,7 @@ fn apply_additional_properties(
     let (Some(ap_schema), Value::Object(inst)) = (obj.get("additionalProperties"), instance) else {
         return;
     };
-    let known_props = collect_known_property_names(obj);
+    let known_props = crate::collect_known_property_names(obj);
 
     for (key, value) in inst {
         if known_props.contains(&key.as_str()) {
@@ -203,15 +203,8 @@ fn apply_additional_properties(
     }
 }
 
-fn collect_known_property_names(obj: &Map<String, Value>) -> Vec<&str> {
-    obj.get("properties")
-        .and_then(Value::as_object)
-        .map(|p| p.keys().map(String::as_str).collect())
-        .unwrap_or_default()
-}
-
 /// Returns `true` when `key` matches any pattern in `patternProperties`.
-fn matches_any_pattern_property(
+pub(crate) fn matches_any_pattern_property(
     obj: &Map<String, Value>,
     key: &str,
     ctx: &ValidationContext<'_>,

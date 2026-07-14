@@ -17,7 +17,7 @@ pub mod classify;
 pub mod cost;
 pub mod explain;
 
-pub use classify::{Representability, classify};
+pub use classify::{Representability, classify, pick_variants};
 pub use cost::estimated_generated_bytes;
 pub use explain::{DispatchStrategy, ExplainReport, explain_schema};
 

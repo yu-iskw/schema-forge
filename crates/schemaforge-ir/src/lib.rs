@@ -344,9 +344,29 @@ impl SchemaNode {
     /// Return one directly declared object attribute by its JSON property name.
     #[must_use]
     pub fn object_attribute(&self, name: &str) -> Option<ObjectAttribute> {
-        self.object_attributes()
+        let child = self.properties.get(name)?;
+        let types: Vec<String> = child
+            .types
+            .type_names()
             .into_iter()
-            .find(|attribute| attribute.name == name)
+            .map(str::to_owned)
+            .collect();
+        Some(ObjectAttribute {
+            name: name.to_owned(),
+            required: self.object.required.iter().any(|r| r == name),
+            types: types.clone(),
+            title: child.title.clone(),
+            description: child.description.clone(),
+            format: child.string.format.clone(),
+            attributes: child.object_attributes(),
+            schema: SchemaMetadata {
+                types,
+                title: child.title.clone(),
+                description: child.description.clone(),
+                format: child.string.format.clone(),
+                nullable: child.types.null,
+            },
+        })
     }
 
     /// Serialize object attribute descriptors to a JSON value.

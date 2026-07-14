@@ -39,7 +39,8 @@ pub fn classify(node: &SchemaNode) -> Representability {
 }
 
 /// Return all union variant schemas from the node (anyOf takes precedence).
-pub(crate) fn pick_variants(node: &SchemaNode) -> &[SchemaNode] {
+#[must_use]
+pub fn pick_variants(node: &SchemaNode) -> &[SchemaNode] {
     if node.any_of.is_empty() {
         &node.one_of
     } else {
@@ -102,10 +103,11 @@ fn variants_share_single_type(variants: &[SchemaNode]) -> bool {
 }
 
 fn is_single_type(ts: TypeSet) -> bool {
+    // `number` implies `integer` in the IR (TypeSet::apply_str sets both when
+    // the keyword is "number"), so treat number||integer as a single type slot.
     let count = u8::from(ts.null)
         + u8::from(ts.boolean)
-        + u8::from(ts.integer)
-        + u8::from(ts.number)
+        + u8::from(ts.number || ts.integer)
         + u8::from(ts.string)
         + u8::from(ts.array)
         + u8::from(ts.object);
@@ -193,6 +195,45 @@ mod tests {
         };
         let node = SchemaNode {
             any_of: vec![s1, s2],
+            ..SchemaNode::default()
+        };
+        assert_eq!(classify(&node), Representability::Structural);
+    }
+
+    #[test]
+    fn structural_homogeneous_any_of_number_schemas() {
+        // "type": "number" sets both number=true and integer=true in the IR.
+        // Two number-schema variants must be treated as homogeneous (single type)
+        // and produce Structural, not Dynamic.
+        let n1 = SchemaNode {
+            types: TypeSet::from_json(&json!("number")),
+            ..SchemaNode::default()
+        };
+        let n2 = SchemaNode {
+            types: TypeSet::from_json(&json!("number")),
+            ..SchemaNode::default()
+        };
+        let node = SchemaNode {
+            any_of: vec![n1, n2],
+            ..SchemaNode::default()
+        };
+        assert_eq!(classify(&node), Representability::Structural);
+    }
+
+    #[test]
+    fn structural_homogeneous_any_of_integer_schemas() {
+        // Pure integer-only variants (integer=true, number=false) also count as
+        // a single numeric type, so a homogeneous anyOf is Structural.
+        let i1 = SchemaNode {
+            types: TypeSet::from_json(&json!("integer")),
+            ..SchemaNode::default()
+        };
+        let i2 = SchemaNode {
+            types: TypeSet::from_json(&json!("integer")),
+            ..SchemaNode::default()
+        };
+        let node = SchemaNode {
+            any_of: vec![i1, i2],
             ..SchemaNode::default()
         };
         assert_eq!(classify(&node), Representability::Structural);
