@@ -1,68 +1,38 @@
 # SchemaForge Examples
 
-This directory contains example JSON Schema documents that demonstrate
-SchemaForge compilation.  Each schema is valid JSON Schema Draft 2020-12 and
-can be used with the `sfg` CLI to explore the compiler outputs.
-
----
+Example JSON Schema documents for exploring the SchemaForge compiler.
+Each schema is Draft 2020-12 and works with the `schemaforge` CLI.
 
 ## Schemas
 
-| File                  | Description                                              |
-|-----------------------|----------------------------------------------------------|
-| `basic-object.json`   | Simple object with required fields, formats, and arrays  |
+| File | Description |
+|---|---|
+| `basic-object.json` | Object with required fields, formats, and arrays |
 
----
+## Running the examples
 
-## Running the Examples
-
-### Ahead-of-time Rust code-generation
+### Inspect and explain
 
 ```bash
-sfg compile --schema examples/basic-object.json --out /tmp/generated/
+schemaforge inspect examples/basic-object.json
+schemaforge explain examples/basic-object.json
 ```
 
-Inspect the generated Rust types:
+### Generate Rust types
 
 ```bash
-cat /tmp/generated/basic_object.rs
-```
-
-### Runtime Plan (interpreted path)
-
-```bash
-sfg compile --schema examples/basic-object.json --plan /tmp/basic-object.plan
-```
-
-Inspect the plan in human-readable form:
-
-```bash
-sfg inspect /tmp/basic-object.plan
+schemaforge generate examples/basic-object.json --output /tmp/generated/
 ```
 
 ### Validate an instance
 
 ```bash
-cat <<'EOF' | sfg validate --schema examples/basic-object.json --stdin
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "name": "Alice"
-}
-EOF
+echo '{"id":"550e8400-e29b-41d4-a716-446655440000","email":"a@b.co","count":1,"tags":["x"]}' \
+  | schemaforge validate examples/basic-object.json -
 ```
 
-### Show transitive URI dependencies
+### Lock local resources
 
 ```bash
-sfg deps --schema examples/basic-object.json --format uri
+schemaforge lock examples/basic-object.json --output schemaforge.lock.toml
 ```
-
----
-
-## Adding New Examples
-
-1. Place the schema file in this directory with a `.json` extension.
-2. Verify it compiles cleanly: `sfg compile --schema examples/<file>.json`.
-3. Add a row to the table above describing the schema.
-4. If the schema exercises a specific feature (e.g. `$ref`, `anyOf`,
-   OpenAPI dialect), name it accordingly so it serves as a reference.
