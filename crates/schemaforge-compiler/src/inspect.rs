@@ -54,26 +54,11 @@ fn detect_capabilities(node: &SchemaNode) -> Vec<String> {
 }
 
 fn collect_type_caps(node: &SchemaNode) -> Vec<String> {
-    let mut caps = Vec::new();
-    if node.types.object {
-        caps.push("object".to_owned());
-    }
-    if node.types.array {
-        caps.push("array".to_owned());
-    }
-    if node.types.string {
-        caps.push("string".to_owned());
-    }
-    if node.types.number {
-        caps.push("number".to_owned());
-    }
-    if node.types.boolean {
-        caps.push("boolean".to_owned());
-    }
-    if node.types.null {
-        caps.push("nullable".to_owned());
-    }
-    caps
+    node.types
+        .type_names()
+        .into_iter()
+        .map(|n| if n == "null" { "nullable" } else { n }.to_owned())
+        .collect()
 }
 
 fn collect_combinator_caps(node: &SchemaNode) -> Vec<String> {
@@ -96,20 +81,11 @@ fn collect_combinator_caps(node: &SchemaNode) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use schemaforge_ir::{SchemaIr, SchemaNode, TypeSet};
-
-    fn make_ir(root: SchemaNode) -> SchemaIr {
-        SchemaIr::new(
-            root,
-            "https://json-schema.org/draft/2020-12/schema",
-            "abc",
-            "test://s",
-        )
-    }
+    use schemaforge_ir::{SchemaNode, TypeSet};
 
     #[test]
     fn inspect_any_schema() {
-        let ir = make_ir(SchemaNode::any());
+        let ir = crate::make_test_ir(SchemaNode::any());
         let r = inspect_ir(&ir);
         assert_eq!(r.node_count, 1);
         assert!(r.capabilities.contains(&"string".to_owned()));
@@ -133,7 +109,7 @@ mod tests {
                 ..SchemaNode::default()
             },
         );
-        let ir = make_ir(node);
+        let ir = crate::make_test_ir(node);
         let r = inspect_ir(&ir);
         assert_eq!(r.node_count, 2);
         assert!(r.capabilities.contains(&"object".to_owned()));

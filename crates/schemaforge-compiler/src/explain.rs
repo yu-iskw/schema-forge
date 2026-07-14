@@ -1,6 +1,6 @@
 //! Schema explanation helpers: representation strategy and codegen decisions.
 
-use schemaforge_analysis::InferredNode;
+use schemaforge_analysis::{InferredNode, explain_schema};
 use schemaforge_ir::{SchemaIr, SchemaNode, TypeSet};
 use serde::{Deserialize, Serialize};
 
@@ -25,14 +25,23 @@ pub struct ExplainResult {
 #[must_use]
 pub fn explain_ir(ir: &SchemaIr) -> ExplainResult {
     let root = &ir.root;
-    let inferred = schemaforge_analysis::analyse(root).ok();
+    let analysis_report = explain_schema(root);
+    let (inferred, analysis_error) = match schemaforge_analysis::analyse(root) {
+        Ok(inf) => (Some(inf), None),
+        Err(e) => (None, Some(format!("analysis error: {e}"))),
+    };
     ExplainResult {
         dialect_uri: ir.dialect_uri.clone(),
         type_strategy: describe_type_strategy(root.types),
         nullable: root.types.null,
         property_count: root.properties.len(),
         combinator_count: count_combinators(root),
-        codegen_hints: make_codegen_hints(root, inferred.as_ref()),
+        codegen_hints: make_codegen_hints(
+            root,
+            inferred.as_ref(),
+            analysis_report.fallback_reasons,
+            analysis_error,
+        ),
     }
 }
 
@@ -51,32 +60,22 @@ fn describe_type_strategy(types: TypeSet) -> String {
 }
 
 fn build_type_name(types: TypeSet) -> String {
-    let mut parts = Vec::new();
-    if types.object {
-        parts.push("object");
-    }
-    if types.array {
-        parts.push("array");
-    }
-    if types.string {
-        parts.push("string");
-    }
-    if types.number {
-        parts.push("number");
-    }
-    if types.boolean {
-        parts.push("boolean");
-    }
-    if types.null {
-        parts.push("null");
-    }
-    parts.join("|")
+    types.type_names().join("|")
 }
 
-fn make_codegen_hints(node: &SchemaNode, inferred: Option<&InferredNode>) -> Vec<String> {
+fn make_codegen_hints(
+    node: &SchemaNode,
+    inferred: Option<&InferredNode>,
+    fallback_reasons: Vec<String>,
+    analysis_error: Option<String>,
+) -> Vec<String> {
     let mut hints = base_codegen_hints(node);
     if let Some(inf) = inferred {
         append_analysis_hints(inf, &mut hints);
+    }
+    hints.extend(fallback_reasons);
+    if let Some(err) = analysis_error {
+        hints.push(err);
     }
     hints
 }
@@ -110,20 +109,11 @@ fn append_analysis_hints(inf: &InferredNode, hints: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use schemaforge_ir::{SchemaIr, SchemaNode, TypeSet};
-
-    fn make_ir(root: SchemaNode) -> SchemaIr {
-        SchemaIr::new(
-            root,
-            "https://json-schema.org/draft/2020-12/schema",
-            "digest",
-            "test://s",
-        )
-    }
+    use schemaforge_ir::{SchemaNode, TypeSet};
 
     #[test]
     fn explain_any_schema() {
-        let ir = make_ir(SchemaNode::any());
+        let ir = crate::make_test_ir(SchemaNode::any());
         let r = explain_ir(&ir);
         assert_eq!(r.type_strategy, "any");
         assert!(
@@ -134,7 +124,7 @@ mod tests {
 
     #[test]
     fn explain_never_schema() {
-        let ir = make_ir(SchemaNode::boolean_schema(false));
+        let ir = crate::make_test_ir(SchemaNode::boolean_schema(false));
         let r = explain_ir(&ir);
         assert_eq!(r.type_strategy, "never");
     }
@@ -152,7 +142,7 @@ mod tests {
                 ..SchemaNode::default()
             },
         );
-        let ir = make_ir(node);
+        let ir = crate::make_test_ir(node);
         let r = explain_ir(&ir);
         assert_eq!(r.type_strategy, "object");
         assert!(r.codegen_hints.contains(&"generates struct".to_owned()));

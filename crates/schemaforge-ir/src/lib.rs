@@ -121,6 +121,35 @@ impl TypeSet {
         names
     }
 
+    /// Return the JSON Schema type names present in this set, in a stable
+    /// order (object, array, string, number, boolean, null).
+    ///
+    /// `integer` is intentionally omitted because it is a subset of `number`
+    /// and code generators treat them together.
+    #[must_use]
+    pub fn type_names(self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        if self.object {
+            names.push("object");
+        }
+        if self.array {
+            names.push("array");
+        }
+        if self.string {
+            names.push("string");
+        }
+        if self.number {
+            names.push("number");
+        }
+        if self.boolean {
+            names.push("boolean");
+        }
+        if self.null {
+            names.push("null");
+        }
+        names
+    }
+
     /// Returns `true` when no type is set.
     #[must_use]
     pub const fn is_empty(self) -> bool {
@@ -424,19 +453,31 @@ mod tests {
 
     #[test]
     fn object_attributes_include_required_metadata_and_nested_attributes() {
-        let mut root = SchemaNode::default();
-        root.types = TypeSet::from_json(&json!("object"));
+        let mut root = SchemaNode {
+            types: TypeSet::from_json(&json!("object")),
+            ..SchemaNode::default()
+        };
         root.object.required.push("id".to_owned());
 
-        let mut id = SchemaNode::default();
-        id.types = TypeSet::from_json(&json!("string"));
-        id.title = Some("Identifier".to_owned());
-        id.string.format = Some("uuid".to_owned());
+        let mut id = SchemaNode {
+            types: TypeSet::from_json(&json!("string")),
+            title: Some("Identifier".to_owned()),
+            string: crate::StringConstraints {
+                format: Some("uuid".to_owned()),
+                ..Default::default()
+            },
+            ..SchemaNode::default()
+        };
+        let _ = &mut id; // prevent unused_mut lint since we only build this inline
 
-        let mut profile = SchemaNode::default();
-        profile.types = TypeSet::from_json(&json!("object"));
-        let mut display_name = SchemaNode::default();
-        display_name.types = TypeSet::from_json(&json!("string"));
+        let mut profile = SchemaNode {
+            types: TypeSet::from_json(&json!("object")),
+            ..SchemaNode::default()
+        };
+        let display_name = SchemaNode {
+            types: TypeSet::from_json(&json!("string")),
+            ..SchemaNode::default()
+        };
         profile
             .properties
             .insert("displayName".to_owned(), display_name);

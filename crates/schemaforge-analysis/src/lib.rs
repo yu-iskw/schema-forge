@@ -56,20 +56,6 @@ pub struct InferredNode {
 }
 
 impl InferredNode {
-    /// Create a node that accepts any value.
-    #[allow(dead_code)]
-    fn any_node() -> Self {
-        Self {
-            types: TypeSet::any(),
-            nullable: true,
-            never: false,
-            any: true,
-            required_properties: Vec::new(),
-            property_types: IndexMap::new(),
-            item_type: None,
-        }
-    }
-
     /// Create a node that accepts no value (bottom type).
     fn never_node() -> Self {
         Self {
