@@ -49,7 +49,17 @@ fn apply_ref(
 /// - `#` or `#/…` → resolved as a JSON Pointer against the root document.
 /// - `#name` (no leading `/` after `#`) → looked up in the `$anchor` table.
 ///
-/// Absolute or relative URIs are looked up in the external registry.
+/// External URIs (with or without a fragment) are resolved against the
+/// registry:
+/// 1. The fragment (if any) is stripped from the URI to form the registry key.
+/// 2. The base document is looked up in the registry.
+/// 3. The fragment is applied against the base document:
+///    - Empty fragment → return the document root.
+///    - `/…` fragment → follow as a JSON Pointer (RFC 6901).
+///    - Non-`/` fragment → treat as a `$anchor` name in the shared anchor
+///      table (populated at construction time for both the root schema and
+///      any schema added via [`crate::Validator::add_schema`]).
+///
 /// Returns `None` when the target cannot be found, which callers treat as a
 /// validation failure.
 pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Option<&'a Value> {
@@ -60,8 +70,30 @@ pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Opt
         // Non-pointer fragment: treat as a static anchor name.
         return ctx.anchors.get(fragment);
     }
-    let key = build_registry_key(ref_uri, ctx.base_uri);
-    ctx.registry.get(&key)
+
+    // External reference: split off any fragment before the registry look-up.
+    let (base_ref, fragment) = split_uri_fragment(ref_uri);
+    let key = build_registry_key(base_ref, ctx.base_uri);
+    let doc = ctx.registry.get(&key)?;
+
+    if fragment.is_empty() {
+        Some(doc)
+    } else if fragment.starts_with('/') {
+        resolve_json_pointer(doc, fragment)
+    } else {
+        // Non-pointer fragment on an external URI: look up as an anchor name.
+        // Anchors from external schemas are merged into ctx.anchors by
+        // Validator::add_schema so they are always available here.
+        ctx.anchors.get(fragment)
+    }
+}
+
+/// Split a URI into `(base, fragment)` at the first `#`.
+///
+/// Returns `(uri, "")` when the URI contains no `#`.
+fn split_uri_fragment(uri: &str) -> (&str, &str) {
+    uri.find('#')
+        .map_or((uri, ""), |pos| (&uri[..pos], &uri[pos + 1..]))
 }
 
 fn build_registry_key(ref_uri: &str, base_uri: &str) -> String {
@@ -222,6 +254,31 @@ mod tests {
         });
         assert!(valid(&schema, &json!({"home": {"city": "Berlin"}})));
         assert!(!valid(&schema, &json!({"home": {"city": 42}})));
+    }
+
+    // ── External $ref resolution (fix #3) ────────────────────────────────────
+
+    #[test]
+    fn external_ref_with_pointer_fragment_after_add_schema() {
+        // A $ref with a non-local URI that includes a JSON Pointer fragment
+        // must look up the registered document by its base URI (fragment
+        // stripped) and then apply the pointer against it.
+        let root = json!({"$ref": "urn:other#/$defs/X"});
+        let mut v = Validator::new(&root, ValidationOptions::default()).unwrap();
+        let external = json!({
+            "$defs": {
+                "X": {"type": "string"}
+            }
+        });
+        v.add_schema("urn:other", external).unwrap();
+        assert!(
+            v.validate(&json!("hello")).is_valid(),
+            "external $ref with pointer fragment must resolve correctly"
+        );
+        assert!(
+            !v.validate(&json!(42)).is_valid(),
+            "referenced schema constraints must be applied"
+        );
     }
 
     #[test]

@@ -168,13 +168,20 @@ impl Validator {
     /// Patterns from the added schema are precompiled and merged into the
     /// validator's pattern cache so they are available during validation.
     ///
+    /// `$anchor` names found in the added schema are merged into the shared
+    /// anchor table.  An anchor name that already exists — whether from the
+    /// root schema or a previously added external schema — is rejected to
+    /// prevent silent ambiguity.
+    ///
     /// # Errors
     ///
     /// Returns [`SchemaError`] when the added schema contains an invalid
-    /// regular expression, unsupported keywords, or duplicate `$anchor` names.
+    /// regular expression, unsupported keywords, or `$anchor` names that
+    /// duplicate any already-registered anchor.
     pub fn add_schema(&mut self, id: impl Into<String>, schema: Value) -> Result<(), SchemaError> {
         check_for_unsupported_keywords(&schema)?;
         collect_patterns_recursive(&schema, &mut self.patterns)?;
+        collect_anchors_recursive(&schema, &mut self.anchors)?;
         self.registry.insert(id.into(), schema);
         Ok(())
     }
@@ -208,6 +215,75 @@ impl Validator {
     }
 }
 
+// ── Schema-child keyword sets ─────────────────────────────────────────────────
+//
+// Construction-time walks (anchor collection, unsupported-keyword checks,
+// pattern precompilation) must only descend into *schema*-valued keywords.
+// Non-schema annotations such as `default`, `const`, `enum`, `examples`,
+// `title`, and `description` are plain JSON values; recursing into them would
+// falsely register anchors, block unsupported-keyword checks, or reject valid
+// literal values that contain regex-like strings.
+
+/// Keywords whose value is a single sub-schema.
+const SCHEMA_SINGLE_KEYWORDS: &[&str] = &[
+    "additionalProperties",
+    "contains",
+    "contentSchema",
+    "else",
+    "if",
+    "items",
+    "not",
+    "propertyNames",
+    "then",
+    "unevaluatedItems",
+    "unevaluatedProperties",
+];
+
+/// Keywords whose value is an array of sub-schemas.
+const SCHEMA_ARRAY_KEYWORDS: &[&str] = &["allOf", "anyOf", "oneOf", "prefixItems"];
+
+/// Keywords whose value is an object mapping names to sub-schemas.
+const SCHEMA_MAP_KEYWORDS: &[&str] = &[
+    "$defs",
+    "definitions",
+    "dependentSchemas",
+    "patternProperties",
+    "properties",
+];
+
+/// Call `f` for each immediately reachable child schema of `obj`.
+///
+/// Only structural keywords are visited.  Non-schema annotations
+/// (`default`, `const`, `enum`, `examples`, `title`, `description`, …)
+/// are intentionally skipped.
+fn recurse_into_schema_children<E, F>(obj: &Map<String, Value>, mut f: F) -> Result<(), E>
+where
+    F: FnMut(&Value) -> Result<(), E>,
+{
+    for &key in SCHEMA_SINGLE_KEYWORDS {
+        if let Some(v) = obj.get(key) {
+            f(v)?;
+        }
+    }
+    for &key in SCHEMA_ARRAY_KEYWORDS {
+        if let Some(Value::Array(arr)) = obj.get(key) {
+            for item in arr {
+                f(item)?;
+            }
+        }
+    }
+    for &key in SCHEMA_MAP_KEYWORDS {
+        if let Some(Value::Object(map)) = obj.get(key) {
+            for v in map.values() {
+                f(v)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── Anchor collection ─────────────────────────────────────────────────────────
+
 /// Walk the schema tree once and collect the `$anchor` registry.
 ///
 /// Returns `Err(SchemaError::DuplicateAnchor)` when the same anchor name
@@ -222,28 +298,19 @@ fn collect_anchors_recursive(
     schema: &Value,
     anchors: &mut HashMap<String, Value>,
 ) -> Result<(), SchemaError> {
-    match schema {
-        Value::Object(obj) => {
-            if let Some(Value::String(name)) = obj.get("$anchor") {
-                if anchors.contains_key(name.as_str()) {
-                    return Err(SchemaError::DuplicateAnchor { name: name.clone() });
-                }
-                anchors.insert(name.clone(), schema.clone());
-            }
-            for value in obj.values() {
-                collect_anchors_recursive(value, anchors)?;
-            }
-            Ok(())
+    let Value::Object(obj) = schema else {
+        return Ok(());
+    };
+    if let Some(Value::String(name)) = obj.get("$anchor") {
+        if anchors.contains_key(name.as_str()) {
+            return Err(SchemaError::DuplicateAnchor { name: name.clone() });
         }
-        Value::Array(arr) => {
-            for item in arr {
-                collect_anchors_recursive(item, anchors)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
+        anchors.insert(name.clone(), schema.clone());
     }
+    recurse_into_schema_children(obj, |child| collect_anchors_recursive(child, anchors))
 }
+
+// ── Unsupported keyword rejection ─────────────────────────────────────────────
 
 /// Keywords rejected at construction because their semantics are not yet
 /// implemented (dynamic/recursive refs, legacy `dependencies`).
@@ -260,16 +327,10 @@ const UNSUPPORTED_KEYWORDS: &[&str] = &[
 
 /// Reject schemas that contain keywords not yet supported by this validator.
 fn check_for_unsupported_keywords(schema: &Value) -> Result<(), SchemaError> {
-    match schema {
-        Value::Object(obj) => check_unsupported_in_object(obj),
-        Value::Array(arr) => {
-            for item in arr {
-                check_for_unsupported_keywords(item)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
+    let Value::Object(obj) = schema else {
+        return Ok(());
+    };
+    check_unsupported_in_object(obj)
 }
 
 fn check_unsupported_in_object(obj: &Map<String, Value>) -> Result<(), SchemaError> {
@@ -280,11 +341,10 @@ fn check_unsupported_in_object(obj: &Map<String, Value>) -> Result<(), SchemaErr
             });
         }
     }
-    for value in obj.values() {
-        check_for_unsupported_keywords(value)?;
-    }
-    Ok(())
+    recurse_into_schema_children(obj, check_for_unsupported_keywords)
 }
+
+// ── Pattern precompilation ────────────────────────────────────────────────────
 
 /// Walk the schema tree and precompile every regex found in `pattern` and
 /// `patternProperties` keys, storing them in `map` keyed by pattern string.
@@ -295,16 +355,10 @@ fn collect_patterns_recursive(
     schema: &Value,
     map: &mut HashMap<String, Regex>,
 ) -> Result<(), SchemaError> {
-    match schema {
-        Value::Object(obj) => collect_patterns_from_object(obj, map),
-        Value::Array(arr) => {
-            for item in arr {
-                collect_patterns_recursive(item, map)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
+    let Value::Object(obj) = schema else {
+        return Ok(());
+    };
+    collect_patterns_from_object(obj, map)
 }
 
 fn collect_patterns_from_object(
@@ -317,10 +371,7 @@ fn collect_patterns_from_object(
             register_pattern(Some(k.as_str()), map)?;
         }
     }
-    for v in obj.values() {
-        collect_patterns_recursive(v, map)?;
-    }
-    Ok(())
+    recurse_into_schema_children(obj, |child| collect_patterns_recursive(child, map))
 }
 
 fn register_pattern(
@@ -890,6 +941,100 @@ mod tests {
             v.add_schema("urn:bad", bad).is_err(),
             "add_schema should fail on invalid pattern"
         );
+    }
+
+    // ── Schema-walk only descends schema keywords (fix #1) ────────────────────
+
+    #[test]
+    fn anchor_in_default_not_registered() {
+        // $anchor inside a `default` value is a plain JSON annotation, not a
+        // schema sub-keyword.  It must NOT be collected into the anchor table.
+        let schema = json!({
+            "$defs": {
+                "Str": {
+                    "type": "string",
+                    "default": {"$anchor": "ghost"}
+                }
+            },
+            "type": "object"
+        });
+        // Construction must succeed (no duplicate-anchor error triggered by `default`).
+        let v = Validator::new(&schema, ValidationOptions::default())
+            .expect("$anchor inside default must not cause a construction error");
+        // A ref that tries to reach the phantom anchor must fail validation
+        // (unresolved), proving the anchor was never registered.
+        let ref_schema = json!({"$ref": "#ghost"});
+        let rv = Validator::new(&ref_schema, ValidationOptions::default()).unwrap();
+        assert!(
+            !rv.validate(&json!("anything")).is_valid(),
+            "$anchor inside `default` must not be registered"
+        );
+        // Original schema still validates normally.
+        assert!(v.validate(&json!({})).is_valid());
+    }
+
+    #[test]
+    fn dynamic_ref_in_const_does_not_fail_construction() {
+        // $dynamicRef inside a `const` value is a literal JSON value, not a
+        // schema keyword usage.  Construction must succeed.
+        let schema = json!({"const": {"$dynamicRef": "#foo"}});
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_ok(),
+            "schema with $dynamicRef inside a const value must be accepted at construction"
+        );
+    }
+
+    #[test]
+    fn invalid_pattern_in_const_does_not_fail_construction() {
+        // An invalid regex string inside a `const` value is not a `pattern`
+        // keyword; construction must succeed.
+        let schema = json!({"const": {"pattern": "[invalid"}});
+        assert!(
+            Validator::new(&schema, ValidationOptions::default()).is_ok(),
+            "invalid pattern string inside const value must not fail construction"
+        );
+    }
+
+    // ── add_schema collects anchors (fix #4) ──────────────────────────────────
+
+    #[test]
+    fn add_schema_collects_anchors_into_shared_table() {
+        // An anchor defined in an external schema added via add_schema must be
+        // resolvable from the root schema via a #anchor-name $ref.
+        let root = json!({"$ref": "#myAnchor"});
+        let mut v = Validator::new(&root, ValidationOptions::default()).unwrap();
+        let external = json!({
+            "$defs": {
+                "Str": {"$anchor": "myAnchor", "type": "string"}
+            }
+        });
+        v.add_schema("urn:ext", external).unwrap();
+        assert!(
+            v.validate(&json!("hello")).is_valid(),
+            "anchor from external schema must be resolvable"
+        );
+        assert!(
+            !v.validate(&json!(42)).is_valid(),
+            "anchor schema constraints must be applied"
+        );
+    }
+
+    #[test]
+    fn add_schema_rejects_duplicate_anchor_across_schemas() {
+        // If a previously registered anchor name appears in a newly added
+        // schema, add_schema must return SchemaError::DuplicateAnchor.
+        let root = json!({"$anchor": "shared", "type": "string"});
+        let mut v = Validator::new(&root, ValidationOptions::default()).unwrap();
+        let ext = json!({"$anchor": "shared", "type": "integer"});
+        let result = v.add_schema("urn:ext", ext);
+        assert!(
+            result.is_err(),
+            "add_schema must reject anchor names that duplicate the root schema"
+        );
+        match result.unwrap_err() {
+            SchemaError::DuplicateAnchor { name } => assert_eq!(name, "shared"),
+            other => panic!("expected DuplicateAnchor, got {other}"),
+        }
     }
 
     // ── $anchor collision ─────────────────────────────────────────────────────

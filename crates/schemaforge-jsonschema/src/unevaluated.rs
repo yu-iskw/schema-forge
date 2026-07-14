@@ -88,7 +88,12 @@ fn is_property_evaluated(
 
 /// Maximum depth for recursive applicator / `$ref` walks when collecting
 /// evaluated properties, items, and contains schemas.
-const MAX_BRANCH_REF_DEPTH: usize = 8;
+///
+/// Matches [`crate::MAX_DEPTH`] so that deeply nested schemas that are
+/// structurally valid at validation time are also fully analysed during the
+/// unevaluated-properties/items pre-pass rather than being silently
+/// under-evaluated.
+const MAX_BRANCH_REF_DEPTH: usize = 128;
 
 /// Invoke `f` for each successful `anyOf` / `oneOf` branch.
 fn for_each_successful_anyof_oneof<'a>(
