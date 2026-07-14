@@ -769,6 +769,7 @@ version = "0.1.0"
 dependencies = [
  "indexmap",
  "schemaforge-diagnostics",
+ "schemaforge-dialect",
  "serde",
  "serde-saphyr",
  "serde_json",

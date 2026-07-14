@@ -4,6 +4,9 @@
 //! (`nullable`, `discriminator`, boolean `exclusiveMinimum`/`exclusiveMaximum`).
 //! OpenAPI 3.1+ uses JSON Schema 2020-12 directly and needs no adaptation.
 
+use schemaforge_dialect::schema_children::{
+    SCHEMA_ARRAY_KEYWORDS, SCHEMA_MAP_KEYWORDS, SCHEMA_SINGLE_KEYWORDS,
+};
 use serde_json::Value;
 
 use crate::OpenApiVersion;
@@ -65,22 +68,16 @@ pub(crate) fn adapt_oas30_schema(schema: &Value) -> Value {
     adapt_exclusive_bound(&mut new_obj, "exclusiveMinimum", "minimum");
     adapt_exclusive_bound(&mut new_obj, "exclusiveMaximum", "maximum");
 
-    // Recurse into all sub-schema locations.
-    adapt_map_values(&mut new_obj, "properties");
-    adapt_map_values(&mut new_obj, "patternProperties");
-    adapt_map_values(&mut new_obj, "$defs");
-    adapt_map_values(&mut new_obj, "definitions");
-    adapt_map_values(&mut new_obj, "dependentSchemas");
-    adapt_single(&mut new_obj, "items");
-    adapt_single(&mut new_obj, "additionalProperties");
-    adapt_single(&mut new_obj, "not");
-    adapt_single(&mut new_obj, "if");
-    adapt_single(&mut new_obj, "then");
-    adapt_single(&mut new_obj, "else");
-    adapt_array_values(&mut new_obj, "prefixItems");
-    adapt_array_values(&mut new_obj, "allOf");
-    adapt_array_values(&mut new_obj, "anyOf");
-    adapt_array_values(&mut new_obj, "oneOf");
+    // Recurse into all structural sub-schema locations (shared keyword lists).
+    for &key in SCHEMA_MAP_KEYWORDS {
+        adapt_map_values(&mut new_obj, key);
+    }
+    for &key in SCHEMA_SINGLE_KEYWORDS {
+        adapt_single(&mut new_obj, key);
+    }
+    for &key in SCHEMA_ARRAY_KEYWORDS {
+        adapt_array_values(&mut new_obj, key);
+    }
 
     Value::Object(new_obj)
 }

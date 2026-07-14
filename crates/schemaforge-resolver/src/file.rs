@@ -71,13 +71,14 @@ impl Resolver for FileResolver {
         let (path_uri, fragment) = uri::split_uri_fragment(&resolved);
 
         // If the base document (fragment-stripped URI) is registered in the
-        // offline registry, the offline resolver is authoritative — return its
-        // result including any error (e.g. NotFound for a missing anchor).
-        // Only fall through to disk when the document itself is absent from
-        // the registry.
+        // offline registry, the offline resolver is authoritative — apply the
+        // fragment here (including NotFound for a missing anchor).  Reuse the
+        // already-resolved key/fragment instead of calling offline.resolve,
+        // which would re-run URI resolution.  Only fall through to disk when
+        // the document itself is absent from the registry.
         let doc_key = uri::normalize_uri(path_uri.to_owned());
-        if self.offline.schemas.contains_key(&doc_key) {
-            return self.offline.resolve(base, reference);
+        if let Some(doc) = self.offline.schemas.get(&doc_key) {
+            return crate::fragment::apply(doc.clone(), fragment, &resolved);
         }
 
         let doc = load_from_path(path_uri, self.base_dir.as_deref(), self.max_bytes)?;

@@ -625,6 +625,23 @@ mod tests {
     }
 
     #[test]
+    fn adapt_oas30_nullable_recursive_contains() {
+        // Nullable nested under `contains` must be adapted via the shared
+        // SCHEMA_SINGLE_KEYWORDS walk (not a hand-maintained keyword list).
+        let schema = json!({
+            "type": "array",
+            "contains": {"type": "string", "nullable": true}
+        });
+        let adapted = adapt_oas30_schema(&schema);
+        let types = adapted["contains"]["type"].as_array().unwrap();
+        assert!(
+            types.contains(&json!("null")),
+            "nullable under contains must have null in type"
+        );
+        assert!(adapted["contains"].get("nullable").is_none());
+    }
+
+    #[test]
     fn swagger_exclusive_minimum_rewritten() {
         // Swagger 2.0 schemas go through the same OAS 3.0 adaptation path.
         let swagger = r#"{
