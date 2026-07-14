@@ -18,10 +18,26 @@
       { "description": "string is valid", "data": "foo", "valid": true },
       { "description": "empty array is valid", "data": [], "valid": true },
       { "description": "true is valid", "data": true, "valid": true },
-      { "description": "object is valid", "data": { "foo": 12 }, "valid": true },
-      { "description": "different integer is invalid", "data": 7, "valid": false },
-      { "description": "different string is invalid", "data": "bar", "valid": false },
-      { "description": "non-empty array is invalid", "data": [1], "valid": false },
+      {
+        "description": "object is valid",
+        "data": { "foo": 12 },
+        "valid": true
+      },
+      {
+        "description": "different integer is invalid",
+        "data": 7,
+        "valid": false
+      },
+      {
+        "description": "different string is invalid",
+        "data": "bar",
+        "valid": false
+      },
+      {
+        "description": "non-empty array is invalid",
+        "data": [1],
+        "valid": false
+      },
       { "description": "false is invalid", "data": false, "valid": false }
     ]
   },

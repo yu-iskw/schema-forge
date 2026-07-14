@@ -2,22 +2,22 @@
 
 ## Overview
 
-This directory describes the fuzz-testing strategy for Schemaforge.  Fuzz
+This directory describes the fuzz-testing strategy for Schemaforge. Fuzz
 targets exercise the JSON Schema parser and validator with arbitrary,
 machine-generated inputs to surface panics, assertion failures, and logic
 errors that hand-written tests may not reach.
 
 ## Targets
 
-| Target | Crate | What it tests |
-|---|---|---|
-| `fuzz_json_schema_parser` | `schemaforge-jsonschema` | Feed arbitrary bytes as a JSON Schema; assert no panic. |
+| Target                          | Crate                    | What it tests                                                                                                      |
+| ------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `fuzz_json_schema_parser`       | `schemaforge-jsonschema` | Feed arbitrary bytes as a JSON Schema; assert no panic.                                                            |
 | `fuzz_validate_random_instance` | `schemaforge-jsonschema` | Feed arbitrary (schema, instance) byte pairs; assert no panic and that `Validator::new` + `validate` never panics. |
 
 ## Running with cargo-fuzz
 
 [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) is the recommended
-driver.  It requires a nightly toolchain and LLVM's libFuzzer.
+driver. It requires a nightly toolchain and LLVM's libFuzzer.
 
 ```bash
 # Install cargo-fuzz (nightly required)
@@ -36,7 +36,7 @@ cargo fuzz coverage fuzz_json_schema_parser
 
 ## cargo-fuzz skeleton
 
-The skeleton targets are listed below.  To activate them, install `cargo-fuzz`
+The skeleton targets are listed below. To activate them, install `cargo-fuzz`
 and initialise the fuzz workspace:
 
 ```bash
@@ -101,7 +101,7 @@ toolchain and `cargo-fuzz`, then runs each target for a fixed duration, e.g.:
 ## Corpus management
 
 Seed corpus files should be placed in
-`fuzz/corpus/<target-name>/` as raw JSON bytes.  Minimised crash inputs should
+`fuzz/corpus/<target-name>/` as raw JSON bytes. Minimised crash inputs should
 be committed to `fuzz/artifacts/<target-name>/`.
 
 Neither directory is pre-populated in this repository because no crashes have

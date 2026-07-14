@@ -5,8 +5,8 @@ Each schema is Draft 2020-12 and works with the `schemaforge` CLI.
 
 ## Schemas
 
-| File | Description |
-|---|---|
+| File                | Description                                      |
+| ------------------- | ------------------------------------------------ |
 | `basic-object.json` | Object with required fields, formats, and arrays |
 
 ## Running the examples

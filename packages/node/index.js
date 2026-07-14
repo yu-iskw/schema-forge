@@ -1,4 +1,4 @@
-'use strict';
+"use strict";
 
 /**
  * Schemaforge Node.js bindings.
@@ -8,10 +8,10 @@
  *   2. If that fails, fall back to spawning the `schemaforge` CLI.
  */
 
-const { spawnSync } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+const { spawnSync } = require("child_process");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 // ---------------------------------------------------------------------------
 // Try to load the native extension
@@ -24,7 +24,7 @@ try {
   // The exact filename depends on the platform/arch triple.
   // @napi-rs/cli generates a binding loader; when present, use it.
   // eslint-disable-next-line import/no-unresolved
-  _native = require('./schemaforge-node.node');
+  _native = require("./schemaforge-node.node");
 } catch (_err) {
   // Native extension not available; will use CLI fallback.
 }
@@ -52,27 +52,27 @@ function _cliValidate(schemaStr, instanceStr) {
 
   // Use a private temp directory so file names are unpredictable and cleanup
   // is atomic: remove the whole dir in the finally block.
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'schemaforge-'));
-  const schemaPath = path.join(tmpDir, 'schema.json');
-  const instancePath = path.join(tmpDir, 'instance.json');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "schemaforge-"));
+  const schemaPath = path.join(tmpDir, "schema.json");
+  const instancePath = path.join(tmpDir, "instance.json");
 
   try {
-    fs.writeFileSync(schemaPath, schemaStr, 'utf8');
-    fs.writeFileSync(instancePath, instanceStr, 'utf8');
+    fs.writeFileSync(schemaPath, schemaStr, "utf8");
+    fs.writeFileSync(instancePath, instanceStr, "utf8");
 
     const result = spawnSync(
-      'schemaforge',
-      ['validate', schemaPath, instancePath],
-      { encoding: 'utf8' }
+      "schemaforge",
+      ["validate", schemaPath, instancePath],
+      { encoding: "utf8" },
     );
 
     if (result.error) {
       throw new Error(
         "The 'schemaforge' CLI binary was not found on PATH and the native " +
-          'napi extension is not installed.\n' +
-          'Install one of:\n' +
-          '  npm install @schemaforge/node   (native)\n' +
-          '  cargo install schemaforge-cli   (CLI only)'
+          "napi extension is not installed.\n" +
+          "Install one of:\n" +
+          "  npm install @schemaforge/node   (native)\n" +
+          "  cargo install schemaforge-cli   (CLI only)",
       );
     }
 
@@ -80,14 +80,20 @@ function _cliValidate(schemaStr, instanceStr) {
       return [];
     }
 
-    const stderr = (result.stderr || '').trim();
+    const stderr = (result.stderr || "").trim();
     const lines = stderr
-      .split('\n')
+      .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
-    return lines.length > 0 ? lines : [`validation failed (exit ${result.status})`];
+    return lines.length > 0
+      ? lines
+      : [`validation failed (exit ${result.status})`];
   } finally {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { /* best-effort cleanup */ }
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch (_) {
+      /* best-effort cleanup */
+    }
   }
 }
 
@@ -103,7 +109,7 @@ function _cliValidate(schemaStr, instanceStr) {
  * @returns {string[]} Empty array when valid; error messages when invalid.
  */
 function validateJson(schemaStr, instanceStr) {
-  if (_native && typeof _native.validateJson === 'function') {
+  if (_native && typeof _native.validateJson === "function") {
     return _native.validateJson(schemaStr, instanceStr);
   }
   return _cliValidate(schemaStr, instanceStr);
@@ -120,7 +126,7 @@ class CompiledSchema {
     this._schemaStr = schemaStr;
     this._native = null;
 
-    if (_native && typeof _native.CompiledSchema === 'function') {
+    if (_native && typeof _native.CompiledSchema === "function") {
       this._native = new _native.CompiledSchema(schemaStr);
     } else {
       try {

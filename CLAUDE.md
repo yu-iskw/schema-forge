@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-SchemaForge is a hybrid JSON Schema compiler Rust workspace.  It compiles JSON
+SchemaForge is a hybrid JSON Schema compiler Rust workspace. It compiles JSON
 Schema documents (Draft 07, Draft 2019-09, Draft 2020-12, OpenAPI 3.x) into
 either native Rust validation code (ahead-of-time path) or a compact Runtime
 Plan (interpreted path).
@@ -29,23 +29,23 @@ make clean      # Remove build artefacts
 
 ## Crate Map
 
-| Crate                     | Role                                                    |
-|---------------------------|---------------------------------------------------------|
-| `schemaforge-source`      | Byte loading, UTF-8 validation, span tracking           |
-| `schemaforge-diagnostics` | Structured error/warning type with file + span          |
-| `schemaforge-dialect`     | Dialect detection and desugaring adapters               |
-| `schemaforge-resolver`    | `$ref` resolution; offline by default, HTTP opt-in      |
-| `schemaforge-ir`          | Canonical Semantic IR (Draft 2020-12 node types)        |
-| `schemaforge-analysis`    | Reachability, cycle detection, unused anchor analysis   |
-| `schemaforge-formats`     | `format` keyword registry and built-in validators       |
-| `schemaforge-jsonschema`  | High-level JSON Schema API surface                      |
-| `schemaforge-openapi`     | OpenAPI schema parsing and dialect bridge               |
-| `schemaforge-compiler`    | Orchestration: ties all crates into one pipeline        |
-| `schemaforge-codegen-rust`| IR → Rust source text (no proc-macros)                 |
-| `schemaforge-runtime`     | Runtime Plan format, emitter, and evaluator             |
-| `schemaforge-python`      | PyO3 bindings (only crate allowing `unsafe` for FFI)    |
-| `schemaforge-node`        | napi-rs bindings (only crate allowing `unsafe` for FFI) |
-| `schemaforge-cli`         | `sfg` binary entry point                                |
+| Crate                      | Role                                                    |
+| -------------------------- | ------------------------------------------------------- |
+| `schemaforge-source`       | Byte loading, UTF-8 validation, span tracking           |
+| `schemaforge-diagnostics`  | Structured error/warning type with file + span          |
+| `schemaforge-dialect`      | Dialect detection and desugaring adapters               |
+| `schemaforge-resolver`     | `$ref` resolution; offline by default, HTTP opt-in      |
+| `schemaforge-ir`           | Canonical Semantic IR (Draft 2020-12 node types)        |
+| `schemaforge-analysis`     | Reachability, cycle detection, unused anchor analysis   |
+| `schemaforge-formats`      | `format` keyword registry and built-in validators       |
+| `schemaforge-jsonschema`   | High-level JSON Schema API surface                      |
+| `schemaforge-openapi`      | OpenAPI schema parsing and dialect bridge               |
+| `schemaforge-compiler`     | Orchestration: ties all crates into one pipeline        |
+| `schemaforge-codegen-rust` | IR → Rust source text (no proc-macros)                  |
+| `schemaforge-runtime`      | Runtime Plan format, emitter, and evaluator             |
+| `schemaforge-python`       | PyO3 bindings (only crate allowing `unsafe` for FFI)    |
+| `schemaforge-node`         | napi-rs bindings (only crate allowing `unsafe` for FFI) |
+| `schemaforge-cli`          | `sfg` binary entry point                                |
 
 ## Compiler Invariants
 
@@ -57,7 +57,7 @@ These invariants are non-negotiable; CI enforces them:
    Only `schemaforge-python` (PyO3) and `schemaforge-node` (napi-rs) may use
    `unsafe`, with per-function documented justification.
 3. **Draft 2020-12 canonical** — `schemaforge-ir` and all downstream crates
-   are dialect-agnostic.  Desugaring happens in `schemaforge-dialect`.
+   are dialect-agnostic. Desugaring happens in `schemaforge-dialect`.
 4. **Hybrid native + plan** — AoT and Runtime Plan paths share the same IR and
    must produce semantically equivalent validation behaviour.
 5. **Deterministic plan output** — identical IR → byte-identical plan.

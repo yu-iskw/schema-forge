@@ -1,9 +1,9 @@
 # ADR 0007 — Offline Resolver as Default
 
-| Field   | Value        |
-|---------|--------------|
-| Status  | Accepted     |
-| Date    | 2026-07-14   |
+| Field  | Value      |
+| ------ | ---------- |
+| Status | Accepted   |
+| Date   | 2026-07-14 |
 
 ## Context
 
@@ -23,13 +23,13 @@ Automatically fetching these URIs during compilation creates several problems:
 
 ## Decision
 
-`schemaforge-resolver` uses a **filesystem loader as its default**.  Network
+`schemaforge-resolver` uses a **filesystem loader as its default**. Network
 fetches require opting in explicitly:
 
 1. HTTP/HTTPS loading is available via the `http-loader` Cargo feature flag,
    disabled by default.
 2. When the HTTP loader is enabled, callers must supply a non-empty allowlist
-   of URI prefixes.  The resolver rejects any URI not matching the allowlist
+   of URI prefixes. The resolver rejects any URI not matching the allowlist
    with a structured diagnostic (not a panic or silent failure).
 3. All resolution attempts (success and failure) are emitted as
    `Diagnostic::Info` entries so build systems can log or replay them.

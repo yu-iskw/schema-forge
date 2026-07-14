@@ -8,7 +8,11 @@
       { "description": "float is invalid", "data": 1.1, "valid": false },
       { "description": "object is invalid", "data": {}, "valid": false },
       { "description": "array is invalid", "data": [], "valid": false },
-      { "description": "boolean true is invalid", "data": true, "valid": false },
+      {
+        "description": "boolean true is invalid",
+        "data": true,
+        "valid": false
+      },
       { "description": "null is invalid", "data": null, "valid": false }
     ]
   },
@@ -17,8 +21,16 @@
     "schema": { "type": "integer" },
     "tests": [
       { "description": "integer is valid", "data": 1, "valid": true },
-      { "description": "float without fraction is valid", "data": 1.0, "valid": true },
-      { "description": "float with fraction is invalid", "data": 1.5, "valid": false },
+      {
+        "description": "float without fraction is valid",
+        "data": 1.0,
+        "valid": true
+      },
+      {
+        "description": "float with fraction is invalid",
+        "data": 1.5,
+        "valid": false
+      },
       { "description": "string is invalid", "data": "1", "valid": false },
       { "description": "null is invalid", "data": null, "valid": false }
     ]
@@ -38,7 +50,11 @@
     "schema": { "type": "object" },
     "tests": [
       { "description": "object is valid", "data": {}, "valid": true },
-      { "description": "non-empty object is valid", "data": { "a": 1 }, "valid": true },
+      {
+        "description": "non-empty object is valid",
+        "data": { "a": 1 },
+        "valid": true
+      },
       { "description": "array is invalid", "data": [], "valid": false },
       { "description": "string is invalid", "data": "string", "valid": false }
     ]
@@ -48,7 +64,11 @@
     "schema": { "type": "array" },
     "tests": [
       { "description": "array is valid", "data": [], "valid": true },
-      { "description": "non-empty array is valid", "data": [1, 2, 3], "valid": true },
+      {
+        "description": "non-empty array is valid",
+        "data": [1, 2, 3],
+        "valid": true
+      },
       { "description": "object is invalid", "data": {}, "valid": false },
       { "description": "string is invalid", "data": "string", "valid": false }
     ]

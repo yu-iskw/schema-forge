@@ -4,9 +4,21 @@
     "schema": { "items": { "type": "integer" } },
     "tests": [
       { "description": "valid items", "data": [1, 2, 3], "valid": true },
-      { "description": "wrong type of items", "data": [1, "x"], "valid": false },
-      { "description": "ignores non-arrays", "data": { "foo": "bar" }, "valid": true },
-      { "description": "JavaScript pseudo-array is valid", "data": {}, "valid": true },
+      {
+        "description": "wrong type of items",
+        "data": [1, "x"],
+        "valid": false
+      },
+      {
+        "description": "ignores non-arrays",
+        "data": { "foo": "bar" },
+        "valid": true
+      },
+      {
+        "description": "JavaScript pseudo-array is valid",
+        "data": {},
+        "valid": true
+      },
       { "description": "empty array is valid", "data": [], "valid": true }
     ]
   },
@@ -24,9 +36,21 @@
       }
     },
     "tests": [
-      { "description": "valid array of objects", "data": [{ "id": 1, "name": "Alice" }, { "id": 2 }], "valid": true },
-      { "description": "missing required id is invalid", "data": [{ "name": "Bob" }], "valid": false },
-      { "description": "wrong id type is invalid", "data": [{ "id": "oops" }], "valid": false },
+      {
+        "description": "valid array of objects",
+        "data": [{ "id": 1, "name": "Alice" }, { "id": 2 }],
+        "valid": true
+      },
+      {
+        "description": "missing required id is invalid",
+        "data": [{ "name": "Bob" }],
+        "valid": false
+      },
+      {
+        "description": "wrong id type is invalid",
+        "data": [{ "id": "oops" }],
+        "valid": false
+      },
       { "description": "empty array is valid", "data": [], "valid": true }
     ]
   }

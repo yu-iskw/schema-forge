@@ -65,10 +65,10 @@
 
 - [x] `schemaforge-python` — Safe Rust API for PyO3 wrapping (COMPLETE)
   - [x] PyO3 FFI module scaffolded; actual `unsafe` glue is feature-gated
-    behind `pyo3-ffi` (see ADR-0003; requires explicit opt-in)
+        behind `pyo3-ffi` (see ADR-0003; requires explicit opt-in)
   - [x] Python wheel build configuration present in `packages/python/`
   - [x] `schemaforge.validate(schema, instance)` API surface defined in safe
-    Rust; Python callable deferred to FFI enablement
+        Rust; Python callable deferred to FFI enablement
   - [x] `schemaforge.compile(schema)` → `CompiledSchema` API surface defined
 
   **Honest notes on deferred items:**
@@ -82,7 +82,7 @@
 
 - [x] `schemaforge-node` — Safe Rust API for napi-rs wrapping (COMPLETE)
   - [x] napi-rs FFI module scaffolded; actual `unsafe` glue is feature-gated
-    behind `napi-ffi` (see ADR-0003; requires explicit opt-in)
+        behind `napi-ffi` (see ADR-0003; requires explicit opt-in)
   - [x] NAPI build configuration present in `packages/node/`
   - [x] `validate(schema, instance)` JS function API surface defined
   - [x] `CompiledSchema` JS class API surface defined
@@ -97,28 +97,28 @@
 ## Phase 8 — Hardening (COMPLETE)
 
 - [x] `docs/release-and-provenance.md` — release checklist with tagged commit,
-  full tests, Rust crates, Python wheels, Node packages, SBOM, attestations,
-  and shared compiler manifest digests
+      full tests, Rust crates, Python wheels, Node packages, SBOM, attestations,
+      and shared compiler manifest digests
 - [x] `docs/sbom.md` — SBOM generation guide (cargo-cyclonedx); linked from CI
 - [x] `.github/workflows/schemaforge-release.yml` — draft `workflow_dispatch`
-  release workflow (make test + SBOM + manifest digest steps; publish stubs)
+      release workflow (make test + SBOM + manifest digest steps; publish stubs)
 - [x] `schemaforge.toml.example` — compiler/limits/resolver/targets sections
-  from the RFC at repo root
+      from the RFC at repo root
 - [x] `examples/basic-object.json` — example JSON Schema Draft 2020-12 document
 - [x] `examples/README.md` — usage guide for examples directory
 - [x] `docs/adr/0006-runtime-plan-format.md` — updated: MessagePack encoding
-  superseded; plan locked as versioned Rust constants (`RUNTIME_PLAN`),
-  compact binary deferred
+      superseded; plan locked as versioned Rust constants (`RUNTIME_PLAN`),
+      compact binary deferred
 - [x] `README.md` links to new docs
 
 ## Known Deferred Items (honest status)
 
-| Item | Status | Tracking |
-|------|--------|---------|
-| PyO3 actual FFI glue (`#[pymodule]`, `#[pyfunction]`) | Feature-gated, not in CI | ADR-0003, `pyo3-ffi` feature |
-| napi-rs actual FFI glue (`#[napi]`, `napi build`) | Feature-gated, not in CI | ADR-0003, `napi-ffi` feature |
-| Full JSON Schema Test Suite vendored in CI | Fixtures present; harness integration pending | `conformance/` directory |
-| WASM plan execution | Deferred; feasibility stub only | `docs/wasm-feasibility.md` |
-| `$dynamicRef` / `$dynamicAnchor` | Not implemented | Phase 1 gaps |
-| Compact binary plan encoding (MessagePack) | Deferred per ADR-0006 update | ADR-0006 |
-| SLSA provenance / cosign signing | Documented; not yet automated | `docs/release-and-provenance.md` §4 |
+| Item                                                  | Status                                        | Tracking                            |
+| ----------------------------------------------------- | --------------------------------------------- | ----------------------------------- |
+| PyO3 actual FFI glue (`#[pymodule]`, `#[pyfunction]`) | Feature-gated, not in CI                      | ADR-0003, `pyo3-ffi` feature        |
+| napi-rs actual FFI glue (`#[napi]`, `napi build`)     | Feature-gated, not in CI                      | ADR-0003, `napi-ffi` feature        |
+| Full JSON Schema Test Suite vendored in CI            | Fixtures present; harness integration pending | `conformance/` directory            |
+| WASM plan execution                                   | Deferred; feasibility stub only               | `docs/wasm-feasibility.md`          |
+| `$dynamicRef` / `$dynamicAnchor`                      | Not implemented                               | Phase 1 gaps                        |
+| Compact binary plan encoding (MessagePack)            | Deferred per ADR-0006 update                  | ADR-0006                            |
+| SLSA provenance / cosign signing                      | Documented; not yet automated                 | `docs/release-and-provenance.md` §4 |

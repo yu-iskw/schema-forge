@@ -7,12 +7,12 @@ validation behaviour across all Schemaforge language bindings.
 
 Each fixture is a JSON object with four fields:
 
-| Field | Type | Description |
-|---|---|---|
-| `description` | string | Human-readable name for the test case |
-| `schema` | object | A JSON Schema to validate against |
-| `instance` | any | The JSON value to be validated |
-| `valid` | boolean | Expected validity (`true` = valid, `false` = invalid) |
+| Field         | Type    | Description                                           |
+| ------------- | ------- | ----------------------------------------------------- |
+| `description` | string  | Human-readable name for the test case                 |
+| `schema`      | object  | A JSON Schema to validate against                     |
+| `instance`    | any     | The JSON value to be validated                        |
+| `valid`       | boolean | Expected validity (`true` = valid, `false` = invalid) |
 
 ## Consuming the fixtures
 
@@ -20,7 +20,7 @@ Each fixture is a JSON object with four fields:
 
 The `schemaforge-python` and `schemaforge-node` crates each have an integration
 test under `crates/<crate>/tests/parity.rs` that reads `fixtures.json` and
-asserts the expected outcome.  Run with:
+asserts the expected outcome. Run with:
 
 ```sh
 cargo test --workspace parity
@@ -45,11 +45,14 @@ for fx in fixtures:
 ### Node.js
 
 ```javascript
-const { validateJson } = require('@schemaforge/node');
-const fixtures = require('./conformance/parity/fixtures.json');
+const { validateJson } = require("@schemaforge/node");
+const fixtures = require("./conformance/parity/fixtures.json");
 
 for (const fx of fixtures) {
-  const errors = validateJson(JSON.stringify(fx.schema), JSON.stringify(fx.instance));
+  const errors = validateJson(
+    JSON.stringify(fx.schema),
+    JSON.stringify(fx.instance),
+  );
   const isValid = errors.length === 0;
   console.assert(isValid === fx.valid, fx.description);
 }
@@ -59,5 +62,5 @@ for (const fx of fixtures) {
 
 Add a new entry to `fixtures.json`. Keep cases minimal and orthogonal —
 one constraint per fixture unless specifically testing interaction between
-keywords.  Run `cargo test --workspace parity` to confirm the new fixture
+keywords. Run `cargo test --workspace parity` to confirm the new fixture
 passes on the Rust side before committing.

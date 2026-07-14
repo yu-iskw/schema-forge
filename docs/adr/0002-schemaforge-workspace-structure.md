@@ -16,23 +16,23 @@ domain-specific set of crates that clearly separate concerns.
 
 Replace the placeholder crates with the following purpose-built crates:
 
-| Crate | Role |
-|---|---|
-| `schemaforge-source` | Source file loading, spans |
-| `schemaforge-diagnostics` | Structured error/warning reporting |
-| `schemaforge-dialect` | JSON Schema dialect detection |
-| `schemaforge-resolver` | URI resolution, offline-first |
-| `schemaforge-ir` | Compiled intermediate representation |
-| `schemaforge-runtime` | Compile-time keyword processing plan |
-| `schemaforge-formats` | Format keyword validators |
-| `schemaforge-jsonschema` | Draft 2020-12 validator |
-| `schemaforge-analysis` | Type inference over IR |
-| `schemaforge-compiler` | Source → IR pipeline |
-| `schemaforge-codegen-rust` | IR → Rust code generator |
-| `schemaforge-openapi` | OpenAPI 3.x document parsing |
-| `schemaforge-python` | Python binding scaffold |
-| `schemaforge-node` | Node.js binding scaffold |
-| `schemaforge-cli` | `schemaforge` binary |
+| Crate                      | Role                                 |
+| -------------------------- | ------------------------------------ |
+| `schemaforge-source`       | Source file loading, spans           |
+| `schemaforge-diagnostics`  | Structured error/warning reporting   |
+| `schemaforge-dialect`      | JSON Schema dialect detection        |
+| `schemaforge-resolver`     | URI resolution, offline-first        |
+| `schemaforge-ir`           | Compiled intermediate representation |
+| `schemaforge-runtime`      | Compile-time keyword processing plan |
+| `schemaforge-formats`      | Format keyword validators            |
+| `schemaforge-jsonschema`   | Draft 2020-12 validator              |
+| `schemaforge-analysis`     | Type inference over IR               |
+| `schemaforge-compiler`     | Source → IR pipeline                 |
+| `schemaforge-codegen-rust` | IR → Rust code generator             |
+| `schemaforge-openapi`      | OpenAPI 3.x document parsing         |
+| `schemaforge-python`       | Python binding scaffold              |
+| `schemaforge-node`         | Node.js binding scaffold             |
+| `schemaforge-cli`          | `schemaforge` binary                 |
 
 All crates share workspace-level `edition`, `license`, `authors`, and lint
 policy via `[workspace.package]` and `[workspace.lints]`.

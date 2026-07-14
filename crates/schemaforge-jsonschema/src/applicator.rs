@@ -56,23 +56,18 @@ fn apply_any_of(
     let Some(Value::Array(schemas)) = obj.get("anyOf") else {
         return;
     };
-    let mut any_aborted = false;
     let mut passed = false;
     for s in schemas {
         let result = validate_schema(s, instance, path, ctx);
         if result.aborted {
-            any_aborted = true;
-        } else if result.is_valid() {
+            out.merge(result);
+            return;
+        }
+        if result.is_valid() {
             passed = true;
         }
     }
-    if any_aborted {
-        out.merge(ValidationOutput::abort(ValidationError::new(
-            path,
-            format!("{path}/anyOf"),
-            "anyOf evaluation aborted: a sub-schema encountered an unresolvable reference",
-        )));
-    } else if !passed {
+    if !passed {
         out.merge(ValidationOutput::fail(ValidationError::new(
             path,
             format!("{path}/anyOf"),
@@ -91,23 +86,18 @@ fn apply_one_of(
     let Some(Value::Array(schemas)) = obj.get("oneOf") else {
         return;
     };
-    let mut any_aborted = false;
     let mut count = 0usize;
     for s in schemas {
         let result = validate_schema(s, instance, path, ctx);
         if result.aborted {
-            any_aborted = true;
-        } else if result.is_valid() {
+            out.merge(result);
+            return;
+        }
+        if result.is_valid() {
             count += 1;
         }
     }
-    if any_aborted {
-        out.merge(ValidationOutput::abort(ValidationError::new(
-            path,
-            format!("{path}/oneOf"),
-            "oneOf evaluation aborted: a sub-schema encountered an unresolvable reference",
-        )));
-    } else if count != 1 {
+    if count != 1 {
         out.merge(ValidationOutput::fail(ValidationError::new(
             path,
             format!("{path}/oneOf"),
@@ -352,24 +342,16 @@ fn apply_contains(
     let min = obj.get("minContains").and_then(Value::as_u64).unwrap_or(1);
     let max = obj.get("maxContains").and_then(Value::as_u64);
 
-    let mut any_aborted = false;
     let mut count = 0u64;
     for item in items {
         let result = validate_schema(contains_schema, item, path, ctx);
         if result.aborted {
-            any_aborted = true;
-        } else if result.is_valid() {
+            out.merge(result);
+            return;
+        }
+        if result.is_valid() {
             count += 1;
         }
-    }
-
-    if any_aborted {
-        out.merge(ValidationOutput::abort(ValidationError::new(
-            path,
-            format!("{path}/contains"),
-            "contains evaluation aborted: schema encountered an unresolvable reference",
-        )));
-        return;
     }
 
     if count < min {

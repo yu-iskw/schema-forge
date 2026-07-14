@@ -19,7 +19,7 @@ provides thin, borrowed views into them.
 ## Decision
 
 The `pyo3` and `napi` Cargo features in `schemaforge-python` and
-`schemaforge-node` respectively enable the actual FFI glue.  When those
+`schemaforge-node` respectively enable the actual FFI glue. When those
 features are enabled the crates override `unsafe_code` at the crate level:
 
 ```toml

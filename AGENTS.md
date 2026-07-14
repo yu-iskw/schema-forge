@@ -4,7 +4,7 @@
 
 This repository is the SchemaForge Rust workspace: a hybrid JSON Schema
 compiler that emits either native Rust validation code (ahead-of-time path)
-or a compact Runtime Plan (interpreted path).  Use this file as the
+or a compact Runtime Plan (interpreted path). Use this file as the
 Codex-facing source of truth for project conventions.
 
 ## Project Shape
@@ -19,23 +19,23 @@ Codex-facing source of truth for project conventions.
 
 ## Crate Overview
 
-| Crate                     | Role                                                    |
-|---------------------------|---------------------------------------------------------|
-| `schemaforge-source`      | Byte loading, UTF-8 validation, span tracking           |
-| `schemaforge-diagnostics` | Structured error/warning type with file + span          |
-| `schemaforge-dialect`     | Dialect detection and desugaring adapters               |
-| `schemaforge-resolver`    | `$ref` resolution; offline by default, HTTP opt-in      |
-| `schemaforge-ir`          | Canonical Semantic IR (Draft 2020-12 node types)        |
-| `schemaforge-analysis`    | Reachability, cycle detection, unused anchor analysis   |
-| `schemaforge-formats`     | `format` keyword registry and built-in validators       |
-| `schemaforge-jsonschema`  | High-level JSON Schema API surface                      |
-| `schemaforge-openapi`     | OpenAPI schema parsing and dialect bridge               |
-| `schemaforge-compiler`    | Orchestration: ties all crates into one pipeline        |
-| `schemaforge-codegen-rust`| IR → Rust source text (no proc-macros)                 |
-| `schemaforge-runtime`     | Runtime Plan format, emitter, and evaluator             |
-| `schemaforge-python`      | PyO3 bindings (only crate allowing `unsafe` for FFI)    |
-| `schemaforge-node`        | napi-rs bindings (only crate allowing `unsafe` for FFI) |
-| `schemaforge-cli`         | `sfg` binary entry point                                |
+| Crate                      | Role                                                    |
+| -------------------------- | ------------------------------------------------------- |
+| `schemaforge-source`       | Byte loading, UTF-8 validation, span tracking           |
+| `schemaforge-diagnostics`  | Structured error/warning type with file + span          |
+| `schemaforge-dialect`      | Dialect detection and desugaring adapters               |
+| `schemaforge-resolver`     | `$ref` resolution; offline by default, HTTP opt-in      |
+| `schemaforge-ir`           | Canonical Semantic IR (Draft 2020-12 node types)        |
+| `schemaforge-analysis`     | Reachability, cycle detection, unused anchor analysis   |
+| `schemaforge-formats`      | `format` keyword registry and built-in validators       |
+| `schemaforge-jsonschema`   | High-level JSON Schema API surface                      |
+| `schemaforge-openapi`      | OpenAPI schema parsing and dialect bridge               |
+| `schemaforge-compiler`     | Orchestration: ties all crates into one pipeline        |
+| `schemaforge-codegen-rust` | IR → Rust source text (no proc-macros)                  |
+| `schemaforge-runtime`      | Runtime Plan format, emitter, and evaluator             |
+| `schemaforge-python`       | PyO3 bindings (only crate allowing `unsafe` for FFI)    |
+| `schemaforge-node`         | napi-rs bindings (only crate allowing `unsafe` for FFI) |
+| `schemaforge-cli`          | `sfg` binary entry point                                |
 
 ## Compiler Invariants
 

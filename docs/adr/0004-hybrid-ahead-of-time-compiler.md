@@ -1,9 +1,9 @@
 # ADR 0004 — Hybrid Ahead-of-Time Compiler Architecture
 
-| Field   | Value        |
-|---------|--------------|
-| Status  | Accepted     |
-| Date    | 2026-07-14   |
+| Field  | Value      |
+| ------ | ---------- |
+| Status | Accepted   |
+| Date   | 2026-07-14 |
 
 ## Context
 
@@ -25,10 +25,10 @@ We adopt a **hybrid** architecture with two output paths that share a common
 front-end and Canonical Semantic IR:
 
 - **Ahead-of-Time (AoT) path** — the IR is lowered to Rust source text by
-  `schemaforge-codegen-rust`.  This path is used by build scripts and CLI
+  `schemaforge-codegen-rust`. This path is used by build scripts and CLI
   users who can tolerate a compile step.
 - **Runtime Plan path** — the IR is serialised to a compact, versioned plan by
-  `schemaforge-runtime`.  This plan is interpreted at validation time by a
+  `schemaforge-runtime`. This plan is interpreted at validation time by a
   small evaluator that ships inside Python/Node packages.
 
 Both paths are driven by the same `schemaforge-compiler` orchestration crate.

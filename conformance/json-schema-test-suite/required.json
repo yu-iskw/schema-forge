@@ -9,8 +9,16 @@
       "required": ["foo"]
     },
     "tests": [
-      { "description": "present required property is valid", "data": { "foo": 1 }, "valid": true },
-      { "description": "non-present required property is invalid", "data": { "bar": 1 }, "valid": false },
+      {
+        "description": "present required property is valid",
+        "data": { "foo": 1 },
+        "valid": true
+      },
+      {
+        "description": "non-present required property is invalid",
+        "data": { "bar": 1 },
+        "valid": false
+      },
       { "description": "ignores arrays", "data": [], "valid": true },
       { "description": "ignores strings", "data": "", "valid": true },
       { "description": "ignores other non-objects", "data": 12, "valid": true }
@@ -20,7 +28,11 @@
     "description": "required default validation",
     "schema": { "required": [] },
     "tests": [
-      { "description": "object with anything is valid", "data": {}, "valid": true },
+      {
+        "description": "object with anything is valid",
+        "data": {},
+        "valid": true
+      },
       { "description": "empty object is valid", "data": {}, "valid": true }
     ]
   },
@@ -28,10 +40,26 @@
     "description": "required with multiple keys",
     "schema": { "required": ["foo", "bar"] },
     "tests": [
-      { "description": "both required properties present", "data": { "foo": 1, "bar": 2 }, "valid": true },
-      { "description": "only foo present", "data": { "foo": 1 }, "valid": false },
-      { "description": "only bar present", "data": { "bar": 2 }, "valid": false },
-      { "description": "neither required property present", "data": {}, "valid": false }
+      {
+        "description": "both required properties present",
+        "data": { "foo": 1, "bar": 2 },
+        "valid": true
+      },
+      {
+        "description": "only foo present",
+        "data": { "foo": 1 },
+        "valid": false
+      },
+      {
+        "description": "only bar present",
+        "data": { "bar": 2 },
+        "valid": false
+      },
+      {
+        "description": "neither required property present",
+        "data": {},
+        "valid": false
+      }
     ]
   }
 ]
