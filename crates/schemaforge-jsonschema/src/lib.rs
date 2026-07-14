@@ -390,4 +390,148 @@ mod tests {
         assert!(is_valid(&json!({"type": "string"}), &json!("hi")));
         assert!(!is_valid(&json!({"type": "string"}), &json!(42)));
     }
+
+    // -----------------------------------------------------------------------
+    // Property-style tests: deterministic random-ish inputs
+    //
+    // These tests probe the validator with unusual-but-legal values —
+    // deeply nested structures, large numbers, empty collections, mixed
+    // types — and assert that the implementation never panics.  They serve
+    // as a lightweight stand-in for libFuzzer-based fuzz testing in
+    // environments where cargo-fuzz is unavailable.
+    // -----------------------------------------------------------------------
+
+    fn assert_no_panic(schema: &Value, instance: &Value) {
+        let v = Validator::new(schema, ValidationOptions::default()).unwrap();
+        let _ = v.validate(instance);
+    }
+
+    #[test]
+    fn prop_deeply_nested_array() {
+        let schema =
+            json!({"type": "array", "items": {"type": "array", "items": {"type": "integer"}}});
+        let instances = [
+            json!([]),
+            json!([[]]),
+            json!([[1, 2, 3], [4, 5]]),
+            json!([[1, "oops"], []]),
+            json!([[[[[1]]]]]),
+        ];
+        for inst in &instances {
+            assert_no_panic(&schema, inst);
+        }
+    }
+
+    #[test]
+    fn prop_large_object() {
+        let schema = json!({"type": "object", "additionalProperties": {"type": "integer"}});
+        let mut obj = serde_json::Map::new();
+        for i in 0_i64..50 {
+            obj.insert(format!("field{i}"), json!(i));
+        }
+        assert_no_panic(&schema, &Value::Object(obj.clone()));
+        obj.insert("bad".to_owned(), json!("not-an-int"));
+        assert_no_panic(&schema, &Value::Object(obj));
+    }
+
+    #[test]
+    fn prop_extreme_numbers() {
+        let schema = json!({"type": "number"});
+        let instances = [
+            json!(0),
+            json!(-1),
+            json!(i64::MAX),
+            json!(i64::MIN),
+            json!(u64::MAX),
+            json!(1.797_693_134_862_315_7e308_f64),
+            json!(f64::MIN_POSITIVE),
+        ];
+        for inst in &instances {
+            assert_no_panic(&schema, inst);
+        }
+    }
+
+    #[test]
+    fn prop_empty_string_and_unicode() {
+        let schema = json!({"type": "string", "minLength": 0});
+        let long_str = "x".repeat(1024);
+        let instances = [
+            json!(""),
+            json!("a"),
+            json!("hello, world!"),
+            json!("🦀"),
+            json!("\u{0000}"),
+            json!("日本語テスト"),
+            Value::String(long_str),
+        ];
+        for inst in &instances {
+            assert_no_panic(&schema, inst);
+        }
+    }
+
+    #[test]
+    fn prop_boolean_schema_never_panics() {
+        let instances = [
+            json!(null),
+            json!(true),
+            json!(false),
+            json!(0),
+            json!(""),
+            json!([]),
+            json!({}),
+        ];
+        for inst in &instances {
+            let v_true = Validator::new(&json!(true), ValidationOptions::default()).unwrap();
+            let v_false = Validator::new(&json!(false), ValidationOptions::default()).unwrap();
+            let _ = v_true.validate(inst);
+            let _ = v_false.validate(inst);
+        }
+    }
+
+    #[test]
+    fn prop_invalid_json_via_validate_str() {
+        let schema = json!({"type": "string"});
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        let bad_inputs = [
+            "not json at all",
+            "{unclosed",
+            "\"unterminated string",
+            "NaN",
+            "undefined",
+        ];
+        for s in bad_inputs {
+            // Must not panic; an error result is expected.
+            let _ = v.validate_str(s);
+        }
+    }
+
+    #[test]
+    fn prop_complex_composition_no_panic() {
+        let schema = json!({
+            "anyOf": [
+                { "type": "string", "minLength": 1 },
+                {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": { "id": { "type": "integer" } }
+                },
+                { "type": "array", "items": { "type": "boolean" } }
+            ]
+        });
+        let instances = [
+            json!(null),
+            json!(""),
+            json!("hello"),
+            json!({}),
+            json!({"id": 1}),
+            json!({"id": "bad"}),
+            json!([]),
+            json!([true, false]),
+            json!([true, "oops"]),
+            json!(42),
+        ];
+        for inst in &instances {
+            assert_no_panic(&schema, inst);
+        }
+    }
 }

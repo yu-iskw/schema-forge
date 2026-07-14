@@ -1,0 +1,35 @@
+[
+  {
+    "description": "object properties validation",
+    "schema": {
+      "properties": {
+        "foo": { "type": "integer" },
+        "bar": { "type": "string" }
+      }
+    },
+    "tests": [
+      { "description": "both properties are valid", "data": { "foo": 1, "bar": "baz" }, "valid": true },
+      { "description": "one property is invalid", "data": { "foo": "quux", "bar": "baz" }, "valid": false },
+      { "description": "both properties are invalid", "data": { "foo": "quux", "bar": 1 }, "valid": false },
+      { "description": "doesn't invalidate other properties", "data": { "quux": "thud" }, "valid": true },
+      { "description": "ignores arrays", "data": [], "valid": true },
+      { "description": "ignores other non-objects", "data": 12, "valid": true }
+    ]
+  },
+  {
+    "description": "properties with type constraint on object",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "age": { "type": "integer" }
+      }
+    },
+    "tests": [
+      { "description": "valid object with all typed properties", "data": { "name": "Alice", "age": 30 }, "valid": true },
+      { "description": "non-integer age is invalid", "data": { "name": "Alice", "age": "thirty" }, "valid": false },
+      { "description": "non-string name is invalid", "data": { "name": 42, "age": 30 }, "valid": false },
+      { "description": "extra properties are allowed", "data": { "name": "Bob", "age": 25, "extra": true }, "valid": true }
+    ]
+  }
+]

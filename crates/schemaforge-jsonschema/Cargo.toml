@@ -22,5 +22,14 @@ regex.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true
 
+[dev-dependencies]
+schemaforge-runtime.workspace = true
+serde.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "validation"
+harness = false
+
 [lints]
 workspace = true

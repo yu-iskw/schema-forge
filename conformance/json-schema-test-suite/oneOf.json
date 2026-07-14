@@ -1,0 +1,47 @@
+[
+  {
+    "description": "oneOf",
+    "schema": {
+      "oneOf": [
+        { "type": "integer" },
+        { "minimum": 2 }
+      ]
+    },
+    "tests": [
+      { "description": "first oneOf valid", "data": 1, "valid": true },
+      { "description": "second oneOf valid", "data": 2.5, "valid": true },
+      { "description": "both oneOf valid", "data": 3, "valid": false },
+      { "description": "neither oneOf valid", "data": 1.5, "valid": false }
+    ]
+  },
+  {
+    "description": "oneOf with base schema",
+    "schema": {
+      "type": "string",
+      "oneOf": [
+        { "minLength": 2 },
+        { "maxLength": 4 }
+      ]
+    },
+    "tests": [
+      { "description": "minsLength valid, maxLength invalid", "data": "foobar", "valid": true },
+      { "description": "minLength invalid, maxLength valid", "data": "f", "valid": true },
+      { "description": "both valid", "data": "foo", "valid": false },
+      { "description": "neither valid but type is invalid too", "data": 12, "valid": false }
+    ]
+  },
+  {
+    "description": "oneOf with exactly one matching type",
+    "schema": {
+      "oneOf": [
+        { "type": "number" },
+        { "type": "string" }
+      ]
+    },
+    "tests": [
+      { "description": "number matches exactly one", "data": 42, "valid": true },
+      { "description": "string matches exactly one", "data": "hello", "valid": true },
+      { "description": "null matches neither", "data": null, "valid": false }
+    ]
+  }
+]
