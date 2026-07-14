@@ -3,6 +3,21 @@
 //! Performs a bottom-up pass over a [`SchemaNode`] tree, narrowing type sets
 //! based on combinators and extracting simplified constraint summaries for use
 //! by code generators and documentation builders.
+//!
+//! # Key entry points
+//!
+//! - [`analyse`] — full inference pass, returns an [`InferredNode`].
+//! - [`classify`] — classify how well a node maps to a static Rust type.
+//! - [`explain_schema`] — combined classification + dispatch + cost report.
+//! - [`estimated_generated_bytes`] — quick byte-cost estimate.
+
+pub mod classify;
+pub mod cost;
+pub mod explain;
+
+pub use classify::{Representability, classify};
+pub use cost::estimated_generated_bytes;
+pub use explain::{DispatchStrategy, ExplainReport, explain_schema};
 
 use indexmap::IndexMap;
 use schemaforge_ir::{SchemaNode, TypeSet};
@@ -87,6 +102,7 @@ fn analyse_at(node: &SchemaNode, path: &str) -> Result<InferredNode, AnalysisErr
     types = narrow_with_enum(node, types);
     types = narrow_with_const(node, types);
     types = intersect_all_of(node, path, types)?;
+    types = narrow_with_union(node, path, types)?;
 
     let nullable = types.null;
     let any = types == TypeSet::any();
@@ -167,7 +183,47 @@ fn intersect_all_of(
     Ok(types)
 }
 
-const fn intersect_type_sets(a: TypeSet, b: TypeSet) -> TypeSet {
+/// Narrow `types` by unioning the type sets reachable via `anyOf` and `oneOf`.
+///
+/// For type-inference purposes both keywords behave identically: any type
+/// reachable through any branch is potentially valid, so we take the union of
+/// all branch type sets and then intersect with the parent's declared types.
+fn narrow_with_union(
+    node: &SchemaNode,
+    path: &str,
+    types: TypeSet,
+) -> Result<TypeSet, AnalysisError> {
+    let has_any_of = !node.any_of.is_empty();
+    let has_one_of = !node.one_of.is_empty();
+    if !has_any_of && !has_one_of {
+        return Ok(types);
+    }
+    let combined = combine_variant_types(node, path)?;
+    Ok(intersect_type_sets(types, combined))
+}
+
+fn combine_variant_types(node: &SchemaNode, path: &str) -> Result<TypeSet, AnalysisError> {
+    let mut result = TypeSet::none();
+    result = union_with_variants(result, &node.any_of, path, "anyOf")?;
+    result = union_with_variants(result, &node.one_of, path, "oneOf")?;
+    Ok(result)
+}
+
+fn union_with_variants(
+    mut acc: TypeSet,
+    variants: &[SchemaNode],
+    path: &str,
+    prefix: &str,
+) -> Result<TypeSet, AnalysisError> {
+    for (i, sub) in variants.iter().enumerate() {
+        let sub_path = format!("{path}/{prefix}/{i}");
+        let sub_inferred = analyse_at(sub, &sub_path)?;
+        acc = union_type_sets(acc, sub_inferred.types);
+    }
+    Ok(acc)
+}
+
+pub(crate) const fn intersect_type_sets(a: TypeSet, b: TypeSet) -> TypeSet {
     TypeSet {
         null: a.null && b.null,
         boolean: a.boolean && b.boolean,
@@ -176,6 +232,18 @@ const fn intersect_type_sets(a: TypeSet, b: TypeSet) -> TypeSet {
         string: a.string && b.string,
         array: a.array && b.array,
         object: a.object && b.object,
+    }
+}
+
+pub(crate) const fn union_type_sets(a: TypeSet, b: TypeSet) -> TypeSet {
+    TypeSet {
+        null: a.null || b.null,
+        boolean: a.boolean || b.boolean,
+        integer: a.integer || b.integer,
+        number: a.number || b.number,
+        string: a.string || b.string,
+        array: a.array || b.array,
+        object: a.object || b.object,
     }
 }
 
@@ -266,5 +334,67 @@ mod tests {
         assert!(inferred.types.string);
         assert!(!inferred.types.number);
         assert!(!inferred.types.null);
+    }
+
+    #[test]
+    fn analyse_any_of_narrows_types() {
+        let sub1 = SchemaNode {
+            types: TypeSet::from_json(&json!("string")),
+            ..SchemaNode::default()
+        };
+        let sub2 = SchemaNode {
+            types: TypeSet::from_json(&json!("number")),
+            ..SchemaNode::default()
+        };
+        let root = SchemaNode {
+            any_of: vec![sub1, sub2],
+            ..SchemaNode::any()
+        };
+        let inferred = analyse(&root).unwrap();
+        assert!(inferred.types.string);
+        assert!(inferred.types.number || inferred.types.integer);
+        assert!(!inferred.types.boolean);
+        assert!(!inferred.types.object);
+    }
+
+    #[test]
+    fn analyse_one_of_narrows_types() {
+        let sub1 = SchemaNode {
+            types: TypeSet::from_json(&json!("boolean")),
+            ..SchemaNode::default()
+        };
+        let sub2 = SchemaNode {
+            types: TypeSet::from_json(&json!("null")),
+            ..SchemaNode::default()
+        };
+        let root = SchemaNode {
+            one_of: vec![sub1, sub2],
+            ..SchemaNode::any()
+        };
+        let inferred = analyse(&root).unwrap();
+        assert!(inferred.types.boolean);
+        assert!(inferred.types.null);
+        assert!(!inferred.types.string);
+    }
+
+    #[test]
+    fn analyse_any_of_intersects_with_explicit_type() {
+        let sub1 = SchemaNode {
+            types: TypeSet::from_json(&json!("string")),
+            ..SchemaNode::default()
+        };
+        let sub2 = SchemaNode {
+            types: TypeSet::from_json(&json!("number")),
+            ..SchemaNode::default()
+        };
+        // Parent declares type: string — anyOf with number should be excluded.
+        let root = SchemaNode {
+            types: TypeSet::from_json(&json!("string")),
+            any_of: vec![sub1, sub2],
+            ..SchemaNode::default()
+        };
+        let inferred = analyse(&root).unwrap();
+        assert!(inferred.types.string);
+        assert!(!inferred.types.number);
     }
 }
