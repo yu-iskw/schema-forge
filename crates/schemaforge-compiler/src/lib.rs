@@ -58,6 +58,17 @@ pub enum CompileError {
         /// The URI that forms the cycle.
         uri: String,
     },
+    /// A long acyclic `$ref` chain exceeded the maximum allowed resolution
+    /// depth.
+    ///
+    /// The compiler limits `$ref` indirection to [`LowerCtx::MAX_DEPTH`]
+    /// levels to prevent stack overflows on pathologically deep schemas.
+    /// Schemas that require deeper chains cannot be compiled.
+    #[error("$ref resolution exceeded maximum depth of {depth} levels")]
+    DepthExceeded {
+        /// The depth at which the limit was reached.
+        depth: usize,
+    },
     /// The schema value is neither a JSON boolean nor a JSON object.
     ///
     /// JSON Schema allows only `true`, `false`, and object schemas.  Any other
@@ -169,6 +180,12 @@ struct LowerCtx<'a> {
 }
 
 impl<'a> LowerCtx<'a> {
+    /// Maximum allowed `$ref` resolution depth (matching the validator limit).
+    ///
+    /// Schemas with longer acyclic `$ref` chains are rejected with
+    /// [`CompileError::DepthExceeded`] rather than risking a stack overflow.
+    pub(crate) const MAX_DEPTH: usize = 128;
+
     const fn new(root: &'a Value) -> Self {
         Self {
             root,
@@ -216,6 +233,10 @@ fn lower_local_ref(ref_str: &str, ctx: &mut LowerCtx<'_>) -> Result<SchemaNode, 
         return Err(CompileError::CyclicRef {
             uri: ref_str.to_owned(),
         });
+    }
+    let depth = ctx.visiting.len();
+    if depth >= LowerCtx::MAX_DEPTH {
+        return Err(CompileError::DepthExceeded { depth });
     }
     // Clone the target so that `ctx` is free to be mutably borrowed during
     // the recursive lowering call (the root document is small-ish in practice).
@@ -618,5 +639,31 @@ mod tests {
         }"##;
         let ir = c.compile_json("test://non-cyclic.json", src).unwrap();
         assert!(ir.root.properties.contains_key("name"));
+    }
+
+    #[test]
+    fn compile_deep_acyclic_ref_chain_exceeds_depth_limit() {
+        let mut c = Compiler::new();
+        // Build a linear chain of MAX_DEPTH+2 defs (each refs the next, none
+        // cyclic) to guarantee the depth bound fires rather than a stack
+        // overflow.
+        let chain_len = LowerCtx::MAX_DEPTH + 2;
+        let mut defs = serde_json::Map::new();
+        for i in 0..chain_len {
+            let key = format!("def{i}");
+            let val = if i + 1 < chain_len {
+                serde_json::json!({ "$ref": format!("#/$defs/def{}", i + 1) })
+            } else {
+                serde_json::json!({ "type": "string" })
+            };
+            defs.insert(key, val);
+        }
+        let schema = serde_json::json!({ "$ref": "#/$defs/def0", "$defs": defs });
+        let src = serde_json::to_string(&schema).unwrap();
+        let result = c.compile_json("test://deep-chain.json", &src);
+        assert!(
+            matches!(result, Err(CompileError::DepthExceeded { .. })),
+            "expected DepthExceeded for long acyclic $ref chain, got: {result:?}"
+        );
     }
 }
