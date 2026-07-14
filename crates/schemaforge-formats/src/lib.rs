@@ -4,7 +4,7 @@
 //! asserted). Use [`FormatRegistry::assert_all`] to enable assertion mode for
 //! specific or all formats.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
 use thiserror::Error;
@@ -50,7 +50,7 @@ type ValidatorFn = fn(&str) -> FormatResult;
 /// Registry of named format validators.
 pub struct FormatRegistry {
     validators: HashMap<String, ValidatorFn>,
-    asserted: HashMap<String, bool>,
+    asserted: HashSet<String>,
 }
 
 impl FormatRegistry {
@@ -59,7 +59,7 @@ impl FormatRegistry {
     pub fn with_defaults() -> Self {
         let mut reg = Self {
             validators: HashMap::new(),
-            asserted: HashMap::new(),
+            asserted: HashSet::new(),
         };
         reg.register_defaults();
         reg
@@ -72,15 +72,12 @@ impl FormatRegistry {
 
     /// Enable assertion mode for the named format.
     pub fn assert_format(&mut self, name: impl Into<String>) {
-        self.asserted.insert(name.into(), true);
+        self.asserted.insert(name.into());
     }
 
     /// Enable assertion mode for all registered formats.
     pub fn assert_all(&mut self) {
-        let names: Vec<_> = self.validators.keys().cloned().collect();
-        for name in names {
-            self.asserted.insert(name, true);
-        }
+        self.asserted = self.validators.keys().cloned().collect();
     }
 
     /// Validate `value` against the named `format`.
@@ -92,7 +89,7 @@ impl FormatRegistry {
         let Some(f) = self.validators.get(format) else {
             return FormatResult::Annotation;
         };
-        if *self.asserted.get(format).unwrap_or(&false) {
+        if self.asserted.contains(format) {
             f(value)
         } else {
             FormatResult::Annotation
@@ -129,52 +126,36 @@ impl Default for FormatRegistry {
 
 // ── Individual format validators ──────────────────────────────────────────────
 
-fn validate_date(s: &str) -> FormatResult {
-    if date_regex().is_match(s) {
+fn match_format(re: &Regex, s: &str, label: &str) -> FormatResult {
+    if re.is_match(s) {
         FormatResult::Valid
     } else {
-        FormatResult::Invalid(format!("{s:?} is not a valid RFC 3339 date"))
+        FormatResult::Invalid(format!("{s:?} is not a valid {label}"))
     }
+}
+
+fn validate_date(s: &str) -> FormatResult {
+    match_format(date_regex(), s, "RFC 3339 date")
 }
 
 fn validate_time(s: &str) -> FormatResult {
-    if time_regex().is_match(s) {
-        FormatResult::Valid
-    } else {
-        FormatResult::Invalid(format!("{s:?} is not a valid RFC 3339 time"))
-    }
+    match_format(time_regex(), s, "RFC 3339 time")
 }
 
 fn validate_datetime(s: &str) -> FormatResult {
-    if datetime_regex().is_match(s) {
-        FormatResult::Valid
-    } else {
-        FormatResult::Invalid(format!("{s:?} is not a valid RFC 3339 date-time"))
-    }
+    match_format(datetime_regex(), s, "RFC 3339 date-time")
 }
 
 fn validate_duration(s: &str) -> FormatResult {
-    if duration_regex().is_match(s) {
-        FormatResult::Valid
-    } else {
-        FormatResult::Invalid(format!("{s:?} is not a valid ISO 8601 duration"))
-    }
+    match_format(duration_regex(), s, "ISO 8601 duration")
 }
 
 fn validate_email(s: &str) -> FormatResult {
-    if email_regex().is_match(s) {
-        FormatResult::Valid
-    } else {
-        FormatResult::Invalid(format!("{s:?} is not a valid email address"))
-    }
+    match_format(email_regex(), s, "email address")
 }
 
 fn validate_hostname(s: &str) -> FormatResult {
-    if hostname_regex().is_match(s) {
-        FormatResult::Valid
-    } else {
-        FormatResult::Invalid(format!("{s:?} is not a valid hostname"))
-    }
+    match_format(hostname_regex(), s, "hostname")
 }
 
 fn validate_ipv4(s: &str) -> FormatResult {
@@ -186,35 +167,19 @@ fn validate_ipv4(s: &str) -> FormatResult {
 }
 
 fn validate_ipv6(s: &str) -> FormatResult {
-    if ipv6_regex().is_match(s) {
-        FormatResult::Valid
-    } else {
-        FormatResult::Invalid(format!("{s:?} is not a valid IPv6 address"))
-    }
+    match_format(ipv6_regex(), s, "IPv6 address")
 }
 
 fn validate_uri(s: &str) -> FormatResult {
-    if uri_regex().is_match(s) {
-        FormatResult::Valid
-    } else {
-        FormatResult::Invalid(format!("{s:?} is not a valid URI"))
-    }
+    match_format(uri_regex(), s, "URI")
 }
 
 fn validate_uri_reference(s: &str) -> FormatResult {
-    if uri_reference_regex().is_match(s) {
-        FormatResult::Valid
-    } else {
-        FormatResult::Invalid(format!("{s:?} is not a valid URI-reference"))
-    }
+    match_format(uri_reference_regex(), s, "URI-reference")
 }
 
 fn validate_uuid(s: &str) -> FormatResult {
-    if uuid_regex().is_match(s) {
-        FormatResult::Valid
-    } else {
-        FormatResult::Invalid(format!("{s:?} is not a valid UUID"))
-    }
+    match_format(uuid_regex(), s, "UUID")
 }
 
 fn validate_json_pointer(s: &str) -> FormatResult {
@@ -226,8 +191,7 @@ fn validate_json_pointer(s: &str) -> FormatResult {
 }
 
 fn validate_relative_json_pointer(s: &str) -> FormatResult {
-    let digits_end = s.bytes().take_while(u8::is_ascii_digit).count();
-    if digits_end > 0 {
+    if s.bytes().take_while(u8::is_ascii_digit).count() > 0 {
         FormatResult::Valid
     } else {
         FormatResult::Invalid(format!("{s:?} is not a valid relative JSON Pointer"))

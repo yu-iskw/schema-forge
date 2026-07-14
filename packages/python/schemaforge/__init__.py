@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -172,13 +173,16 @@ def _cli_validate(schema_str: str, instance_str: str) -> list[str]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"instance_str is not valid JSON: {exc}") from exc
 
-    schema_fd, schema_path = tempfile.mkstemp(suffix=".json")
-    instance_fd, instance_path = tempfile.mkstemp(suffix=".json")
+    # Private temp directory (same pattern as packages/node): unpredictable
+    # names and a single recursive cleanup in finally.
+    tmp_dir = tempfile.mkdtemp(prefix="schemaforge-")
+    schema_path = os.path.join(tmp_dir, "schema.json")
+    instance_path = os.path.join(tmp_dir, "instance.json")
     try:
-        os.write(schema_fd, schema_str.encode())
-        os.close(schema_fd)
-        os.write(instance_fd, instance_str.encode())
-        os.close(instance_fd)
+        with open(schema_path, "w", encoding="utf-8") as schema_file:
+            schema_file.write(schema_str)
+        with open(instance_path, "w", encoding="utf-8") as instance_file:
+            instance_file.write(instance_str)
         try:
             result = subprocess.run(
                 ["schemaforge", "validate", schema_path, instance_path],
@@ -194,8 +198,8 @@ def _cli_validate(schema_str: str, instance_str: str) -> list[str]:
                 "  cargo install schemaforge-cli  (CLI only)"
             ) from exc
     finally:
-        os.unlink(schema_path)
-        os.unlink(instance_path)
+        # Best-effort cleanup of the private temp directory.
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     if result.returncode == 0:
         return []
