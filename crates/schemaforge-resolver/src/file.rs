@@ -69,8 +69,88 @@ impl Resolver for FileResolver {
             return Ok(v);
         }
         let resolved = uri::resolve_uri(base, reference);
-        load_from_path(&resolved, self.base_dir.as_deref(), self.max_bytes)
+        // Strip any fragment before opening the file so the OS sees a plain
+        // path.  After loading the document the fragment is applied:
+        //   - empty / absent → return the whole document
+        //   - starts with `/` → follow as a JSON Pointer (RFC 6901)
+        //   - otherwise       → scan the document for `$anchor` by name
+        let path_uri = uri::strip_fragment(&resolved);
+        let doc = load_from_path(path_uri, self.base_dir.as_deref(), self.max_bytes)?;
+        let fragment = resolved.find('#').map_or("", |i| &resolved[i + 1..]);
+        apply_fragment(doc, fragment, &resolved)
     }
+}
+
+// ── Fragment application ──────────────────────────────────────────────────────
+
+/// Apply a URI fragment to a loaded JSON document.
+///
+/// - Empty fragment → return the document unchanged.
+/// - Fragment starting with `/` → follow as a JSON Pointer (RFC 6901).
+/// - Any other fragment → scan the document for a sub-schema whose
+///   `"$anchor"` property matches the name and return that sub-schema.
+fn apply_fragment(doc: Value, fragment: &str, uri: &str) -> Result<Value, ResolveError> {
+    if fragment.is_empty() {
+        return Ok(doc);
+    }
+    if fragment.starts_with('/') {
+        apply_json_pointer(doc, fragment, uri)
+    } else {
+        find_anchor_in_value(&doc, fragment).ok_or_else(|| ResolveError::NotFound(uri.to_owned()))
+    }
+}
+
+/// Follow a JSON Pointer (RFC 6901) on an owned `Value`.
+///
+/// `pointer` must start with `/`.  Tokens are unescaped (`~1` → `/`,
+/// `~0` → `~`) before descent.  Returns `ResolveError::NotFound` when
+/// any token cannot be followed.
+fn apply_json_pointer(mut doc: Value, pointer: &str, uri: &str) -> Result<Value, ResolveError> {
+    let tokens = pointer.strip_prefix('/').unwrap_or("");
+    if tokens.is_empty() {
+        return Ok(doc);
+    }
+    for token in tokens.split('/') {
+        let decoded = token.replace("~1", "/").replace("~0", "~");
+        doc = match doc {
+            Value::Object(mut map) => map
+                .remove(&decoded)
+                .ok_or_else(|| ResolveError::NotFound(uri.to_owned()))?,
+            Value::Array(arr) => {
+                let idx: usize = decoded
+                    .parse()
+                    .map_err(|_| ResolveError::NotFound(uri.to_owned()))?;
+                arr.into_iter()
+                    .nth(idx)
+                    .ok_or_else(|| ResolveError::NotFound(uri.to_owned()))?
+            }
+            _ => return Err(ResolveError::NotFound(uri.to_owned())),
+        };
+    }
+    Ok(doc)
+}
+
+/// Recursively scan `val` for the first JSON object whose `"$anchor"` string
+/// property equals `name` and return a clone of that object.
+///
+/// The scan is a plain JSON walk and is not limited to schema-valued
+/// positions; callers should ensure the document is a JSON Schema where
+/// `$anchor` carries its defined meaning.
+fn find_anchor_in_value(val: &Value, name: &str) -> Option<Value> {
+    let Value::Object(obj) = val else {
+        return None;
+    };
+    if let Some(Value::String(anchor)) = obj.get("$anchor")
+        && anchor == name
+    {
+        return Some(val.clone());
+    }
+    for child in obj.values() {
+        if let Some(found) = find_anchor_in_value(child, name) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -518,5 +598,81 @@ mod tests {
         let p = PathBuf::from("/tmp/jail/sub/schema.json");
         let normalized = lexically_normalize(&p);
         assert_eq!(normalized, p);
+    }
+
+    // ── Fragment-aware resolution ─────────────────────────────────────────────
+
+    fn make_schema_file(dir: &std::path::Path, name: &str, content: &str) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, content).unwrap();
+        format!("file://{}", path.display())
+    }
+
+    #[test]
+    fn file_resolver_strips_empty_fragment_and_returns_whole_doc() {
+        let dir = std::env::temp_dir().join("sf_frag_empty_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let uri = make_schema_file(&dir, "schema.json", r#"{"type":"string"}"#);
+        let r = FileResolver::with_base_dir(&dir);
+        let result = r.resolve("", &format!("{uri}#"));
+        assert!(result.is_ok(), "empty fragment must succeed: {result:?}");
+        assert_eq!(result.unwrap(), serde_json::json!({"type": "string"}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_resolver_applies_pointer_fragment() {
+        let dir = std::env::temp_dir().join("sf_frag_pointer_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = r#"{"$defs":{"Str":{"type":"string"}}}"#;
+        let uri = make_schema_file(&dir, "schema.json", content);
+        let r = FileResolver::with_base_dir(&dir);
+        let result = r.resolve("", &format!("{uri}#/$defs/Str"));
+        assert!(result.is_ok(), "pointer fragment must succeed: {result:?}");
+        assert_eq!(result.unwrap(), serde_json::json!({"type": "string"}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_resolver_applies_anchor_fragment() {
+        let dir = std::env::temp_dir().join("sf_frag_anchor_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = r#"{"$defs":{"Str":{"$anchor":"myStr","type":"string"}}}"#;
+        let uri = make_schema_file(&dir, "schema.json", content);
+        let r = FileResolver::with_base_dir(&dir);
+        let result = r.resolve("", &format!("{uri}#myStr"));
+        assert!(result.is_ok(), "anchor fragment must succeed: {result:?}");
+        let val = result.unwrap();
+        assert_eq!(val["type"], serde_json::json!("string"));
+        assert_eq!(val["$anchor"], serde_json::json!("myStr"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_resolver_anchor_fragment_not_found_returns_not_found() {
+        let dir = std::env::temp_dir().join("sf_frag_anchor_missing_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let uri = make_schema_file(&dir, "schema.json", r#"{"type":"object"}"#);
+        let r = FileResolver::with_base_dir(&dir);
+        let result = r.resolve("", &format!("{uri}#nonexistent"));
+        assert!(
+            matches!(result, Err(ResolveError::NotFound(_))),
+            "missing anchor must return NotFound, got {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_resolver_pointer_fragment_missing_key_returns_not_found() {
+        let dir = std::env::temp_dir().join("sf_frag_ptr_missing_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let uri = make_schema_file(&dir, "schema.json", r#"{"type":"string"}"#);
+        let r = FileResolver::with_base_dir(&dir);
+        let result = r.resolve("", &format!("{uri}#/nonexistent/key"));
+        assert!(
+            matches!(result, Err(ResolveError::NotFound(_))),
+            "missing pointer key must return NotFound, got {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
