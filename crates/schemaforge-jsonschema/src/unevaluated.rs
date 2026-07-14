@@ -86,6 +86,75 @@ fn is_property_evaluated(
     branch_props.contains(key)
 }
 
+/// Maximum depth for recursive applicator / `$ref` walks when collecting
+/// evaluated properties, items, and contains schemas.
+const MAX_BRANCH_REF_DEPTH: usize = 8;
+
+/// Invoke `f` for each successful `anyOf` / `oneOf` branch.
+fn for_each_successful_anyof_oneof<'a>(
+    obj: &'a Map<String, Value>,
+    instance: &Value,
+    ctx: &ValidationContext<'_>,
+    mut f: impl FnMut(&'a Value),
+) {
+    for applicator_key in ["anyOf", "oneOf"] {
+        let Some(Value::Array(branches)) = obj.get(applicator_key) else {
+            continue;
+        };
+        for branch in branches {
+            if validate_schema(branch, instance, "", ctx).is_valid() {
+                f(branch);
+            }
+        }
+    }
+}
+
+/// Invoke `f` for `if` (always evaluated) and the active `then` / `else` branch.
+///
+/// Draft 2020-12 §11.2: `if` always runs; `then` applies when it succeeds and
+/// `else` when it fails.
+fn for_each_if_then_else<'a>(
+    obj: &'a Map<String, Value>,
+    instance: &Value,
+    ctx: &ValidationContext<'_>,
+    mut f: impl FnMut(&'a Value),
+) {
+    let Some(if_schema) = obj.get("if") else {
+        return;
+    };
+    f(if_schema);
+    let branch_key = if validate_schema(if_schema, instance, "", ctx).is_valid() {
+        "then"
+    } else {
+        "else"
+    };
+    if let Some(branch) = obj.get(branch_key) {
+        f(branch);
+    }
+}
+
+/// Invoke `f` for each child schema reached via `allOf`, successful
+/// `anyOf`/`oneOf`, active `if`/`then`/`else`, or `$ref`.
+fn for_each_child_schema<'a>(
+    obj: &'a Map<String, Value>,
+    instance: &Value,
+    ctx: &ValidationContext<'a>,
+    mut f: impl FnMut(&'a Value),
+) {
+    if let Some(Value::Array(branches)) = obj.get("allOf") {
+        for branch in branches {
+            f(branch);
+        }
+    }
+    for_each_successful_anyof_oneof(obj, instance, ctx, &mut f);
+    for_each_if_then_else(obj, instance, ctx, &mut f);
+    if let Some(Value::String(ref_uri)) = obj.get("$ref")
+        && let Some(target) = crate::core::resolve_ref(ref_uri, ctx)
+    {
+        f(target);
+    }
+}
+
 /// Collect property names that are considered evaluated by each applicator.
 ///
 /// - `allOf`: every branch must pass, so all declared properties from every
@@ -106,64 +175,13 @@ fn applicator_branch_evaluated_properties(
     ctx: &ValidationContext<'_>,
 ) -> HashSet<String> {
     let mut evaluated: HashSet<String> = HashSet::new();
-
-    // Top-level sibling $ref: resolve and collect as if it were an allOf branch.
-    if let Some(Value::String(ref_uri)) = obj.get("$ref")
-        && let Some(target) = crate::core::resolve_ref(ref_uri, ctx)
-    {
-        collect_branch_props_depth(target, instance, &mut evaluated, ctx, 0);
-    }
-
-    // allOf: union all branches unconditionally (all must pass).
-    if let Some(Value::Array(branches)) = obj.get("allOf") {
-        for branch in branches {
-            collect_branch_props(branch, instance, &mut evaluated, ctx);
-        }
-    }
-
-    // anyOf/oneOf: only include props from branches the instance actually matches.
-    for applicator_key in &["anyOf", "oneOf"] {
-        let Some(Value::Array(branches)) = obj.get(*applicator_key) else {
-            continue;
-        };
-        for branch in branches {
-            if validate_schema(branch, instance, "", ctx).is_valid() {
-                collect_branch_props(branch, instance, &mut evaluated, ctx);
-            }
-        }
-    }
-
-    // if/then/else: include properties from the active branch.
-    collect_if_then_else_props(obj, instance, ctx, &mut evaluated);
-
-    // dependentSchemas: include properties when the trigger key is present.
+    // Top-level applicators only — local `properties` are handled separately
+    // by `is_property_evaluated`.
+    for_each_child_schema(obj, instance, ctx, |branch| {
+        collect_branch_props_depth(branch, instance, &mut evaluated, ctx, 0);
+    });
     collect_dependent_schemas_props(obj, instance, ctx, &mut evaluated);
-
     evaluated
-}
-
-/// Collect property names from `if`, and from `then` when `if` validates or
-/// from `else` when `if` fails.
-///
-/// The `if` schema always runs against the instance, so its declared
-/// `properties` are always considered evaluated (Draft 2020-12 §11.2).
-fn collect_if_then_else_props(
-    obj: &Map<String, Value>,
-    instance: &Value,
-    ctx: &ValidationContext<'_>,
-    evaluated: &mut HashSet<String>,
-) {
-    let Some(if_schema) = obj.get("if") else {
-        return;
-    };
-    // `if` always evaluates, regardless of outcome.
-    collect_branch_props(if_schema, instance, evaluated, ctx);
-
-    let condition_met = validate_schema(if_schema, instance, "", ctx).is_valid();
-    let branch_key = if condition_met { "then" } else { "else" };
-    if let Some(branch) = obj.get(branch_key) {
-        collect_branch_props(branch, instance, evaluated, ctx);
-    }
 }
 
 /// Collect property names from `dependentSchemas` entries whose trigger
@@ -181,26 +199,9 @@ fn collect_dependent_schemas_props(
     };
     for (trigger, dep_schema) in dep_schemas {
         if inst.contains_key(trigger) {
-            collect_branch_props(dep_schema, instance, evaluated, ctx);
+            collect_branch_props_depth(dep_schema, instance, evaluated, ctx, 0);
         }
     }
-}
-
-/// Maximum depth for recursive `$ref` chain following when collecting branch properties.
-const MAX_BRANCH_REF_DEPTH: usize = 8;
-
-/// Collect property names declared in `branch.properties` (and in any schema
-/// reached via a local `$ref` chain or `allOf` nesting) into `evaluated`.
-///
-/// Also accounts for `additionalProperties` (not `false`) and
-/// `patternProperties` in the branch.
-fn collect_branch_props(
-    branch: &Value,
-    instance: &Value,
-    evaluated: &mut HashSet<String>,
-    ctx: &ValidationContext<'_>,
-) {
-    collect_branch_props_depth(branch, instance, evaluated, ctx, 0);
 }
 
 /// Recursively collect branch properties up to `MAX_BRANCH_REF_DEPTH`.
@@ -218,85 +219,9 @@ fn collect_branch_props_depth(
         return;
     };
     collect_props_from_obj(obj, instance, evaluated, ctx);
-    collect_allof_branch_props(obj, instance, evaluated, ctx, depth);
-    follow_ref_branch_props(obj, instance, evaluated, ctx, depth);
-    collect_anyof_oneof_sub_props(obj, instance, evaluated, ctx, depth);
-    collect_if_then_else_sub_props(obj, instance, evaluated, ctx, depth);
-}
-
-/// Collect property names from successful `anyOf`/`oneOf` branches nested
-/// inside a branch schema.
-fn collect_anyof_oneof_sub_props(
-    obj: &Map<String, Value>,
-    instance: &Value,
-    evaluated: &mut HashSet<String>,
-    ctx: &ValidationContext<'_>,
-    depth: usize,
-) {
-    for applicator_key in &["anyOf", "oneOf"] {
-        let Some(Value::Array(branches)) = obj.get(*applicator_key) else {
-            continue;
-        };
-        for branch in branches {
-            if validate_schema(branch, instance, "", ctx).is_valid() {
-                collect_branch_props_depth(branch, instance, evaluated, ctx, depth + 1);
-            }
-        }
-    }
-}
-
-/// Collect property names from `if` (always) and the active `then`/`else`
-/// branch nested inside a branch schema.
-fn collect_if_then_else_sub_props(
-    obj: &Map<String, Value>,
-    instance: &Value,
-    evaluated: &mut HashSet<String>,
-    ctx: &ValidationContext<'_>,
-    depth: usize,
-) {
-    let Some(if_schema) = obj.get("if") else {
-        return;
-    };
-    collect_branch_props_depth(if_schema, instance, evaluated, ctx, depth + 1);
-    let condition_met = validate_schema(if_schema, instance, "", ctx).is_valid();
-    let branch_key = if condition_met { "then" } else { "else" };
-    if let Some(branch) = obj.get(branch_key) {
-        collect_branch_props_depth(branch, instance, evaluated, ctx, depth + 1);
-    }
-}
-
-/// Collect property names from every `allOf` sub-schema (all must pass, so all
-/// declared properties are unconditionally considered evaluated).
-fn collect_allof_branch_props(
-    obj: &Map<String, Value>,
-    instance: &Value,
-    evaluated: &mut HashSet<String>,
-    ctx: &ValidationContext<'_>,
-    depth: usize,
-) {
-    let Some(Value::Array(all_of)) = obj.get("allOf") else {
-        return;
-    };
-    for sub in all_of {
+    for_each_child_schema(obj, instance, ctx, |sub| {
         collect_branch_props_depth(sub, instance, evaluated, ctx, depth + 1);
-    }
-}
-
-/// Follow a local `$ref` one hop and continue recursive collection.
-fn follow_ref_branch_props(
-    obj: &Map<String, Value>,
-    instance: &Value,
-    evaluated: &mut HashSet<String>,
-    ctx: &ValidationContext<'_>,
-    depth: usize,
-) {
-    let Some(Value::String(ref_uri)) = obj.get("$ref") else {
-        return;
-    };
-    let Some(target) = crate::core::resolve_ref(ref_uri, ctx) else {
-        return;
-    };
-    collect_branch_props_depth(target, instance, evaluated, ctx, depth + 1);
+    });
 }
 
 /// Collect property names from `obj` into `evaluated`.
@@ -403,181 +328,37 @@ fn collect_contains_schemas_depth<'a>(
     if let Some(contains) = obj.get("contains") {
         out.push(contains);
     }
-    // allOf: all branches contribute unconditionally.
-    if let Some(Value::Array(branches)) = obj.get("allOf") {
-        for branch in branches {
-            if let Value::Object(b) = branch {
-                collect_contains_schemas_depth(b, instance, ctx, depth + 1, out);
-            }
+    for_each_child_schema(obj, instance, ctx, |branch| {
+        if let Value::Object(b) = branch {
+            collect_contains_schemas_depth(b, instance, ctx, depth + 1, out);
         }
-    }
-    // anyOf/oneOf: only successful branches contribute.
-    collect_anyof_oneof_contains(obj, instance, ctx, depth, out);
-    // if always; then when condition met; else when not.
-    collect_if_then_else_contains(obj, instance, ctx, depth, out);
-    // $ref target.
-    if let Some(Value::String(ref_uri)) = obj.get("$ref")
-        && let Some(Value::Object(target)) = crate::core::resolve_ref(ref_uri, ctx)
-    {
-        collect_contains_schemas_depth(target, instance, ctx, depth + 1, out);
-    }
+    });
 }
 
-fn collect_anyof_oneof_contains<'a>(
-    obj: &'a Map<String, Value>,
-    instance: &Value,
-    ctx: &ValidationContext<'a>,
-    depth: usize,
-    out: &mut Vec<&'a Value>,
-) {
-    for applicator_key in &["anyOf", "oneOf"] {
-        if let Some(Value::Array(branches)) = obj.get(*applicator_key) {
-            for branch in branches {
-                if validate_schema(branch, instance, "", ctx).is_valid()
-                    && let Value::Object(b) = branch
-                {
-                    collect_contains_schemas_depth(b, instance, ctx, depth + 1, out);
-                }
-            }
-        }
-    }
-}
-
-fn collect_if_then_else_contains<'a>(
-    obj: &'a Map<String, Value>,
-    instance: &Value,
-    ctx: &ValidationContext<'a>,
-    depth: usize,
-    out: &mut Vec<&'a Value>,
-) {
-    let Some(if_schema) = obj.get("if") else {
-        return;
-    };
-    // `if` always evaluates.
-    if let Value::Object(b) = if_schema {
-        collect_contains_schemas_depth(b, instance, ctx, depth + 1, out);
-    }
-    let condition_met = validate_schema(if_schema, instance, "", ctx).is_valid();
-    let branch_key = if condition_met { "then" } else { "else" };
-    if let Some(Value::Object(b)) = obj.get(branch_key) {
-        collect_contains_schemas_depth(b, instance, ctx, depth + 1, out);
-    }
-}
-
-/// Return `(effective_prefix_len, has_items)` by merging the direct schema
-/// keywords with any `items`/`prefixItems` found inside `allOf`/`anyOf`/`oneOf`
-/// branches, `if`/`then`/`else`, a sibling `$ref`, or through `$ref` chains.
-///
-/// For `allOf` all branches contribute unconditionally.  For `anyOf`/`oneOf`
-/// only branches that actually validate the instance contribute.  For
-/// `if`/`then`/`else`, `if` always contributes and the active branch
-/// (`then` or `else`) contributes when the condition is met or not.
-/// A sibling `$ref` is treated like an extra allOf branch.
+/// Return `(effective_prefix_len, has_items)` from this schema and reachable
+/// applicator / `$ref` sub-schemas (same reachability as `contains`).
 fn items_eval_range(
     obj: &Map<String, Value>,
     instance: &Value,
     ctx: &ValidationContext<'_>,
 ) -> (usize, bool) {
-    let direct_prefix = obj
-        .get("prefixItems")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    let direct_items = obj.contains_key("items");
-
-    let mut branch_prefix = 0usize;
-    let mut branch_items = false;
-
-    // allOf: all branches must pass — include unconditionally.
-    if let Some(Value::Array(branches)) = obj.get("allOf") {
-        for branch in branches {
-            collect_branch_items_eval(
-                branch,
-                &mut branch_prefix,
-                &mut branch_items,
-                instance,
-                ctx,
-                0,
-            );
-        }
-    }
-
-    // anyOf/oneOf: only include from branches the instance actually validates.
-    for applicator_key in &["anyOf", "oneOf"] {
-        if let Some(Value::Array(branches)) = obj.get(*applicator_key) {
-            for branch in branches {
-                if validate_schema(branch, instance, "", ctx).is_valid() {
-                    collect_branch_items_eval(
-                        branch,
-                        &mut branch_prefix,
-                        &mut branch_items,
-                        instance,
-                        ctx,
-                        0,
-                    );
-                }
-            }
-        }
-    }
-
-    // if/then/else: if always; then when condition met; else when not.
-    collect_if_then_else_items_eval(obj, instance, &mut branch_prefix, &mut branch_items, ctx);
-
-    // Top-level sibling $ref: treated like an additional allOf branch.
-    if let Some(Value::String(ref_uri)) = obj.get("$ref")
-        && let Some(target) = crate::core::resolve_ref(ref_uri, ctx)
-    {
-        collect_branch_items_eval(
-            target,
-            &mut branch_prefix,
-            &mut branch_items,
-            instance,
-            ctx,
-            0,
-        );
-    }
-
-    (
-        direct_prefix.max(branch_prefix),
-        direct_items || branch_items,
-    )
+    let mut max_prefix = 0usize;
+    let mut has_items = false;
+    collect_items_eval_depth(obj, instance, ctx, 0, &mut max_prefix, &mut has_items);
+    (max_prefix, has_items)
 }
 
-fn collect_if_then_else_items_eval(
+fn collect_items_eval_depth(
     obj: &Map<String, Value>,
-    instance: &Value,
-    max_prefix: &mut usize,
-    has_items: &mut bool,
-    ctx: &ValidationContext<'_>,
-) {
-    let Some(if_schema) = obj.get("if") else {
-        return;
-    };
-    // `if` always evaluates.
-    collect_branch_items_eval(if_schema, max_prefix, has_items, instance, ctx, 0);
-    let condition_met = validate_schema(if_schema, instance, "", ctx).is_valid();
-    let branch_key = if condition_met { "then" } else { "else" };
-    if let Some(branch) = obj.get(branch_key) {
-        collect_branch_items_eval(branch, max_prefix, has_items, instance, ctx, 0);
-    }
-}
-
-/// Recursively collect `prefixItems` length and `items` presence from a branch
-/// schema, following `$ref`, nested `allOf`, successful `anyOf`/`oneOf`, and
-/// `if`/`then`/`else` — up to `MAX_BRANCH_REF_DEPTH`.
-fn collect_branch_items_eval(
-    branch: &Value,
-    max_prefix: &mut usize,
-    has_items: &mut bool,
     instance: &Value,
     ctx: &ValidationContext<'_>,
     depth: usize,
+    max_prefix: &mut usize,
+    has_items: &mut bool,
 ) {
     if depth > MAX_BRANCH_REF_DEPTH {
         return;
     }
-    let Value::Object(obj) = branch else {
-        return;
-    };
     if obj.contains_key("items") {
         *has_items = true;
     }
@@ -588,58 +369,11 @@ fn collect_branch_items_eval(
     {
         *max_prefix = (*max_prefix).max(prefix_len);
     }
-    // Follow $ref one hop.
-    if let Some(Value::String(ref_uri)) = obj.get("$ref")
-        && let Some(target) = crate::core::resolve_ref(ref_uri, ctx)
-    {
-        collect_branch_items_eval(target, max_prefix, has_items, instance, ctx, depth + 1);
-    }
-    // Recurse into nested allOf (all branches must pass).
-    if let Some(Value::Array(all_of)) = obj.get("allOf") {
-        for sub in all_of {
-            collect_branch_items_eval(sub, max_prefix, has_items, instance, ctx, depth + 1);
+    for_each_child_schema(obj, instance, ctx, |branch| {
+        if let Value::Object(b) = branch {
+            collect_items_eval_depth(b, instance, ctx, depth + 1, max_prefix, has_items);
         }
-    }
-    collect_anyof_oneof_items_in_branch(obj, max_prefix, has_items, instance, ctx, depth);
-    collect_if_then_else_items_in_branch(obj, max_prefix, has_items, instance, ctx, depth);
-}
-
-fn collect_anyof_oneof_items_in_branch(
-    obj: &Map<String, Value>,
-    max_prefix: &mut usize,
-    has_items: &mut bool,
-    instance: &Value,
-    ctx: &ValidationContext<'_>,
-    depth: usize,
-) {
-    for applicator_key in &["anyOf", "oneOf"] {
-        if let Some(Value::Array(branches)) = obj.get(*applicator_key) {
-            for sub in branches {
-                if validate_schema(sub, instance, "", ctx).is_valid() {
-                    collect_branch_items_eval(sub, max_prefix, has_items, instance, ctx, depth + 1);
-                }
-            }
-        }
-    }
-}
-
-fn collect_if_then_else_items_in_branch(
-    obj: &Map<String, Value>,
-    max_prefix: &mut usize,
-    has_items: &mut bool,
-    instance: &Value,
-    ctx: &ValidationContext<'_>,
-    depth: usize,
-) {
-    let Some(if_schema) = obj.get("if") else {
-        return;
-    };
-    collect_branch_items_eval(if_schema, max_prefix, has_items, instance, ctx, depth + 1);
-    let condition_met = validate_schema(if_schema, instance, "", ctx).is_valid();
-    let branch_key = if condition_met { "then" } else { "else" };
-    if let Some(branch) = obj.get(branch_key) {
-        collect_branch_items_eval(branch, max_prefix, has_items, instance, ctx, depth + 1);
-    }
+    });
 }
 
 #[cfg(test)]
