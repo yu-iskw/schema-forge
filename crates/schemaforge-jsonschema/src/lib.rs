@@ -223,7 +223,6 @@ impl Validator {
             anchors_by_doc: &self.anchors_by_doc,
             patterns: &self.patterns,
             depth: Cell::new(0),
-            branch_depth_exceeded: Cell::new(false),
         };
         validate_schema(&self.schema, instance, "", &ctx)
     }
@@ -386,11 +385,6 @@ pub(crate) struct ValidationContext<'a> {
     /// schemas such as `{"$ref": "#"}`.  Uses interior mutability so the
     /// signature of `validate_schema` stays `&ValidationContext`.
     pub(crate) depth: Cell<u32>,
-    /// Set to `true` by the unevaluated-properties/items pre-pass when the
-    /// branch-ref walk exceeds [`unevaluated::MAX_BRANCH_REF_DEPTH`].  When
-    /// set, `apply_unevaluated_*` fails closed rather than silently accepting
-    /// properties or items that could not be fully analysed.
-    pub(crate) branch_depth_exceeded: Cell<bool>,
 }
 
 /// Validate `instance` against `schema` at `path`.

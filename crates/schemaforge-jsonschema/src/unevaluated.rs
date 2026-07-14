@@ -19,6 +19,13 @@
 //!
 //! Branch `additionalProperties` (when not `false`) marks all instance keys as
 //! evaluated for that branch.  Branch `patternProperties` marks matching keys.
+//!
+//! ## Depth exceeded
+//!
+//! Collection functions return a `bool` (`true` = depth exceeded) rather than
+//! mutating a shared `Cell`.  This prevents a nested `validate_schema` call
+//! — made during `anyOf`/`oneOf` branch checking inside the collection walk —
+//! from clearing the depth flag that a sibling `allOf` chain had already set.
 
 use std::collections::HashSet;
 
@@ -38,31 +45,6 @@ pub(crate) fn apply(
     apply_unevaluated_items(obj, instance, path, ctx, out);
 }
 
-/// Fail closed when a branch-ref pre-pass hit [`MAX_BRANCH_REF_DEPTH`].
-///
-/// Clears and returns `true` when the flag was set so callers abort instead of
-/// treating an incomplete evaluated set as authoritative.
-fn take_branch_depth_exceeded(
-    path: &str,
-    keyword: &str,
-    ctx: &ValidationContext<'_>,
-    out: &mut ValidationOutput,
-) -> bool {
-    if !ctx.branch_depth_exceeded.get() {
-        return false;
-    }
-    ctx.branch_depth_exceeded.set(false);
-    out.merge(ValidationOutput::fail(ValidationError::new(
-        path,
-        format!("{path}/{keyword}"),
-        format!(
-            "{keyword} analysis aborted: \
-             schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
-        ),
-    )));
-    true
-}
-
 fn apply_unevaluated_properties(
     obj: &Map<String, Value>,
     instance: &Value,
@@ -76,13 +58,18 @@ fn apply_unevaluated_properties(
     };
     let explicit = crate::collect_known_property_names(obj);
     let has_additional = obj.contains_key("additionalProperties");
-    // Fresh flag per pass: the Cell is shared across nested validate_schema
-    // calls, so a prior depth abort must not poison this walk.
-    ctx.branch_depth_exceeded.set(false);
     // Build once — not per instance key — so large objects don't re-walk
     // allOf/anyOf/oneOf branches on every property.
-    let branch_props = applicator_branch_evaluated_properties(obj, instance, ctx);
-    if take_branch_depth_exceeded(path, "unevaluatedProperties", ctx, out) {
+    let (branch_props, depth_exceeded) = applicator_branch_evaluated_properties(obj, instance, ctx);
+    if depth_exceeded {
+        out.merge(ValidationOutput::fail(ValidationError::new(
+            path,
+            format!("{path}/unevaluatedProperties"),
+            format!(
+                "unevaluatedProperties analysis aborted: \
+                 schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
+            ),
+        )));
         return;
     }
     for (key, value) in inst {
@@ -193,6 +180,9 @@ fn for_each_child_schema<'a>(
 
 /// Collect property names that are considered evaluated by each applicator.
 ///
+/// Returns `(evaluated, depth_exceeded)`.  When `depth_exceeded` is `true`
+/// the caller must fail closed rather than trusting the (incomplete) set.
+///
 /// - `allOf`: every branch must pass, so all declared properties from every
 ///   branch are evaluated regardless of whether the instance has them.
 /// - `anyOf` / `oneOf`: only properties from branches that actually validate
@@ -209,64 +199,77 @@ fn applicator_branch_evaluated_properties(
     obj: &Map<String, Value>,
     instance: &Value,
     ctx: &ValidationContext<'_>,
-) -> HashSet<String> {
+) -> (HashSet<String>, bool) {
     let mut evaluated: HashSet<String> = HashSet::new();
+    let mut exceeded = false;
     // Top-level applicators only — local `properties` are handled separately
     // by `is_property_evaluated`.
     for_each_child_schema(obj, instance, ctx, |branch| {
-        collect_branch_props_depth(branch, instance, &mut evaluated, ctx, 0);
+        if collect_branch_props_depth(branch, instance, &mut evaluated, ctx, 0) {
+            exceeded = true;
+        }
     });
-    collect_dependent_schemas_props(obj, instance, ctx, &mut evaluated, 0);
-    evaluated
+    if collect_dependent_schemas_props(obj, instance, ctx, &mut evaluated, 0) {
+        exceeded = true;
+    }
+    (evaluated, exceeded)
 }
 
 /// Collect property names from `dependentSchemas` entries whose trigger
 /// property is present in `instance`.
 ///
+/// Returns `true` when any recursive walk exceeded [`MAX_BRANCH_REF_DEPTH`].
 /// `depth` continues the surrounding branch-walk budget so nested
-/// `dependentSchemas` cannot reset [`MAX_BRANCH_REF_DEPTH`].
+/// `dependentSchemas` cannot reset the depth budget independently.
 fn collect_dependent_schemas_props(
     obj: &Map<String, Value>,
     instance: &Value,
     ctx: &ValidationContext<'_>,
     evaluated: &mut HashSet<String>,
     depth: usize,
-) {
+) -> bool {
     let (Some(Value::Object(dep_schemas)), Value::Object(inst)) =
         (obj.get("dependentSchemas"), instance)
     else {
-        return;
+        return false;
     };
+    let mut exceeded = false;
     for (trigger, dep_schema) in dep_schemas {
-        if inst.contains_key(trigger) {
-            collect_branch_props_depth(dep_schema, instance, evaluated, ctx, depth);
+        if inst.contains_key(trigger)
+            && collect_branch_props_depth(dep_schema, instance, evaluated, ctx, depth)
+        {
+            exceeded = true;
         }
     }
+    exceeded
 }
 
-/// Recursively collect branch properties up to `MAX_BRANCH_REF_DEPTH`.
+/// Recursively collect branch properties up to [`MAX_BRANCH_REF_DEPTH`].
+///
+/// Returns `true` when the depth limit is hit so callers can fail closed
+/// rather than returning an incomplete evaluated set.
 fn collect_branch_props_depth(
     branch: &Value,
     instance: &Value,
     evaluated: &mut HashSet<String>,
     ctx: &ValidationContext<'_>,
     depth: usize,
-) {
+) -> bool {
     if depth > MAX_BRANCH_REF_DEPTH {
-        // Mark the context so callers can fail closed rather than returning
-        // an incomplete evaluated set.
-        ctx.branch_depth_exceeded.set(true);
-        return;
+        return true;
     }
     let Value::Object(obj) = branch else {
-        return;
+        return false;
     };
     collect_props_from_obj(obj, instance, evaluated, ctx);
     // Nested `dependentSchemas` (e.g. under allOf / $ref) contribute when triggered.
-    collect_dependent_schemas_props(obj, instance, ctx, evaluated, depth + 1);
+    let mut exceeded = collect_dependent_schemas_props(obj, instance, ctx, evaluated, depth + 1);
     for_each_child_schema(obj, instance, ctx, |sub| {
-        collect_branch_props_depth(sub, instance, evaluated, ctx, depth + 1);
+        if collect_branch_props_depth(sub, instance, evaluated, ctx, depth + 1) {
+            exceeded = true;
+        }
     });
+    exceeded
 }
 
 /// Collect property names from `obj` into `evaluated`.
@@ -322,21 +325,37 @@ fn apply_unevaluated_items(
         return;
     };
 
-    // Fresh flag per pass (see apply_unevaluated_properties).
-    ctx.branch_depth_exceeded.set(false);
-    let (effective_prefix_len, has_items) = items_eval_range(obj, instance, ctx);
+    let (effective_prefix_len, has_items, depth_exceeded_items) =
+        items_eval_range(obj, instance, ctx);
     // `items` keyword at a reachable depth evaluates every remaining index, so
     // unevaluatedItems is a no-op regardless of depth.
     if has_items {
-        ctx.branch_depth_exceeded.set(false);
+        return;
+    }
+    if depth_exceeded_items {
+        out.merge(ValidationOutput::fail(ValidationError::new(
+            path,
+            format!("{path}/unevaluatedItems"),
+            format!(
+                "unevaluatedItems analysis aborted: \
+                 schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
+            ),
+        )));
         return;
     }
 
     // Collect contains schemas once — not per array element — so large arrays
     // don't re-walk allOf/anyOf/$ref for every index.
-    let contains_schemas = collect_contains_schemas(obj, instance, ctx);
-
-    if take_branch_depth_exceeded(path, "unevaluatedItems", ctx, out) {
+    let (contains_schemas, depth_exceeded_contains) = collect_contains_schemas(obj, instance, ctx);
+    if depth_exceeded_contains {
+        out.merge(ValidationOutput::fail(ValidationError::new(
+            path,
+            format!("{path}/unevaluatedItems"),
+            format!(
+                "unevaluatedItems analysis aborted: \
+                 schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
+            ),
+        )));
         return;
     }
 
@@ -359,50 +378,57 @@ fn apply_unevaluated_items(
 /// Reaches through `allOf` (unconditionally), successful `anyOf`/`oneOf`
 /// branches, `if` (always) plus the active `then`/`else` branch, and `$ref`
 /// targets — mirroring the reachability rules used for properties.
+///
+/// Returns `(schemas, depth_exceeded)`.
 fn collect_contains_schemas<'a>(
     obj: &'a Map<String, Value>,
     instance: &Value,
     ctx: &ValidationContext<'a>,
-) -> Vec<&'a Value> {
+) -> (Vec<&'a Value>, bool) {
     let mut out = Vec::new();
-    collect_contains_schemas_depth(obj, instance, ctx, 0, &mut out);
-    out
+    let exceeded = collect_contains_schemas_depth(obj, instance, ctx, 0, &mut out);
+    (out, exceeded)
 }
 
+/// Returns `true` when the depth limit is hit.
 fn collect_contains_schemas_depth<'a>(
     obj: &'a Map<String, Value>,
     instance: &Value,
     ctx: &ValidationContext<'a>,
     depth: usize,
     out: &mut Vec<&'a Value>,
-) {
+) -> bool {
     if depth > MAX_BRANCH_REF_DEPTH {
-        ctx.branch_depth_exceeded.set(true);
-        return;
+        return true;
     }
     if let Some(contains) = obj.get("contains") {
         out.push(contains);
     }
+    let mut exceeded = false;
     for_each_child_schema(obj, instance, ctx, |branch| {
-        if let Value::Object(b) = branch {
-            collect_contains_schemas_depth(b, instance, ctx, depth + 1, out);
+        if let Value::Object(b) = branch
+            && collect_contains_schemas_depth(b, instance, ctx, depth + 1, out)
+        {
+            exceeded = true;
         }
     });
+    exceeded
 }
 
-/// Return `(effective_prefix_len, has_items)` from this schema and reachable
-/// applicator / `$ref` sub-schemas (same reachability as `contains`).
+/// Return `(effective_prefix_len, has_items, depth_exceeded)` from this schema
+/// and reachable applicator / `$ref` sub-schemas (same reachability as `contains`).
 fn items_eval_range(
     obj: &Map<String, Value>,
     instance: &Value,
     ctx: &ValidationContext<'_>,
-) -> (usize, bool) {
+) -> (usize, bool, bool) {
     let mut max_prefix = 0usize;
     let mut has_items = false;
-    collect_items_eval_depth(obj, instance, ctx, 0, &mut max_prefix, &mut has_items);
-    (max_prefix, has_items)
+    let exceeded = collect_items_eval_depth(obj, instance, ctx, 0, &mut max_prefix, &mut has_items);
+    (max_prefix, has_items, exceeded)
 }
 
+/// Returns `true` when the depth limit is hit.
 fn collect_items_eval_depth(
     obj: &Map<String, Value>,
     instance: &Value,
@@ -410,10 +436,9 @@ fn collect_items_eval_depth(
     depth: usize,
     max_prefix: &mut usize,
     has_items: &mut bool,
-) {
+) -> bool {
     if depth > MAX_BRANCH_REF_DEPTH {
-        ctx.branch_depth_exceeded.set(true);
-        return;
+        return true;
     }
     if obj.contains_key("items") {
         *has_items = true;
@@ -425,11 +450,15 @@ fn collect_items_eval_depth(
     {
         *max_prefix = (*max_prefix).max(prefix_len);
     }
+    let mut exceeded = false;
     for_each_child_schema(obj, instance, ctx, |branch| {
-        if let Value::Object(b) = branch {
-            collect_items_eval_depth(b, instance, ctx, depth + 1, max_prefix, has_items);
+        if let Value::Object(b) = branch
+            && collect_items_eval_depth(b, instance, ctx, depth + 1, max_prefix, has_items)
+        {
+            exceeded = true;
         }
     });
+    exceeded
 }
 
 #[cfg(test)]
@@ -1223,6 +1252,63 @@ mod tests {
         assert!(
             !valid(&s, &json!({"billing_address": "123 Main"})),
             "billing_address must be rejected when trigger is absent"
+        );
+    }
+
+    // ── Regression: nested anyOf branch must not clear parent depth-exceeded ──
+
+    #[test]
+    fn nested_anyof_unevaluated_does_not_clear_parent_depth_exceeded() {
+        // Regression test for shared-Cell bug: in the old implementation,
+        // `apply_unevaluated_properties` reset `ctx.branch_depth_exceeded` to
+        // `false` at entry.  When the collector walked an `anyOf` branch to
+        // determine if it was successful, that nested `validate_schema` call
+        // invoked `apply_unevaluated_properties` on the branch — clearing the
+        // Cell even though a sibling `allOf` deep chain had already set it.
+        //
+        // After the fix, depth-exceeded is returned as a `bool` from each
+        // collector, so no nested call can clear the parent's result.
+        //
+        // Schema structure:
+        //   outer: { allOf: [<deep chain>], anyOf: [<branch with UP>], unevaluatedProperties: false }
+        //
+        // The deep allOf chain (> MAX_BRANCH_REF_DEPTH levels) triggers depth
+        // exceeded during property collection.  The anyOf branch has its own
+        // `unevaluatedProperties: false`; validating it to check branch success
+        // used to call `apply_unevaluated_properties` and reset the Cell,
+        // causing the outer to pass {"y": 2} without a depth error.
+        let leaf = serde_json::json!({"properties": {"x": true}});
+        let mut deep = leaf;
+        // 133 > MAX_BRANCH_REF_DEPTH (128)
+        for _ in 0..133_usize {
+            deep = serde_json::json!({"allOf": [deep]});
+        }
+        let schema = serde_json::json!({
+            "allOf": [deep],
+            "anyOf": [
+                // This branch is valid for {"y": 2} and has its own
+                // unevaluatedProperties — in the old code it cleared the Cell.
+                {
+                    "properties": {"y": true},
+                    "unevaluatedProperties": false
+                }
+            ],
+            "unevaluatedProperties": false
+        });
+        let v = Validator::new(&schema, ValidationOptions::default()).unwrap();
+        // {"y": 2} passes the anyOf branch.  Without the fix, the outer UP
+        // check silently accepted it (Cell was cleared, "y" was in evaluated).
+        // With the fix, the depth error is preserved and the outer fails closed.
+        let out = v.validate(&serde_json::json!({"y": 2}));
+        assert!(
+            !out.is_valid(),
+            "parent must fail closed when branch depth is exceeded, \
+             even when a nested anyOf branch clears the old shared Cell"
+        );
+        assert!(
+            out.errors.iter().any(|e| e.message.contains("depth")),
+            "at least one error must mention 'depth', got: {:#?}",
+            out.errors
         );
     }
 }
