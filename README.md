@@ -72,6 +72,40 @@ sfg inspect out/schema.plan
 sfg deps --schema path/to/schema.json --format uri
 ```
 
+## Object Attribute Introspection
+
+Compiled schemas expose the attributes declared under a JSON Schema object's
+`properties` keyword. Each descriptor contains the exact JSON property name,
+requiredness, accepted JSON types, title, description, format, nested object
+attributes, and the compiled child schema. Source property order is preserved.
+`oneOf` and `anyOf` alternatives are intentionally not flattened because that
+would erase variant semantics.
+
+### Rust
+
+```rust
+let ir = compiler.compile_json("memory://user", schema_json)?;
+let attributes = ir.object_attributes();
+let id = ir.object_attribute("id").expect("id property");
+assert!(id.required);
+```
+
+### Python
+
+```python
+schema = schemaforge.compile_schema(schema_json)
+attributes = schema.object_attributes()
+id_attribute = schema.object_attribute("id")
+```
+
+### TypeScript / Node.js
+
+```typescript
+const schema = compileSchema(schemaJson);
+const attributes = schema.objectAttributes();
+const idAttribute = schema.objectAttribute("id");
+```
+
 ## Make Commands
 
 ```bash
