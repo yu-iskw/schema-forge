@@ -55,6 +55,7 @@ schemaforge-analysis    = { path = "crates/schemaforge-analysis" }
 schemaforge-compiler    = { path = "crates/schemaforge-compiler" }
 schemaforge-codegen-rust = { path = "crates/schemaforge-codegen-rust" }
 schemaforge-openapi     = { path = "crates/schemaforge-openapi" }
+schemaforge-bindings    = { path = "crates/schemaforge-bindings" }
 schemaforge-python      = { path = "crates/schemaforge-python" }
 schemaforge-node        = { path = "crates/schemaforge-node" }
 

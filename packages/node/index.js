@@ -1,17 +1,43 @@
 'use strict';
 
-/** Schemaforge Node.js bindings. */
+/**
+ * Schemaforge Node.js bindings.
+ *
+ * Execution strategy:
+ *   1. Try to load the native napi-rs extension (`schemaforge-node.*.node`).
+ *   2. If that fails, fall back to spawning the `schemaforge` CLI.
+ */
 
 const { spawnSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+// ---------------------------------------------------------------------------
+// Try to load the native extension
+// ---------------------------------------------------------------------------
 
 let _native = null;
+
 try {
+  // napi-rs places the compiled .node file alongside index.js.
+  // The exact filename depends on the platform/arch triple.
+  // @napi-rs/cli generates a binding loader; when present, use it.
   // eslint-disable-next-line import/no-unresolved
   _native = require('./schemaforge-node.node');
 } catch (_err) {
-  // Native extension not available; validation uses the CLI fallback.
+  // Native extension not available; will use CLI fallback.
 }
 
+// ---------------------------------------------------------------------------
+// CLI subprocess fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {string} schemaStr
+ * @param {string} instanceStr
+ * @returns {string[]}
+ */
 function _cliValidate(schemaStr, instanceStr) {
   try {
     JSON.parse(schemaStr);
@@ -24,64 +50,57 @@ function _cliValidate(schemaStr, instanceStr) {
     throw new Error(`instanceStr is not valid JSON: ${e.message}`);
   }
 
-  const result = spawnSync(
-    'schemaforge',
-    ['validate', '--schema-json', schemaStr, '--instance-json', instanceStr],
-    { encoding: 'utf8' }
-  );
+  const uid = `${process.pid}-${Date.now()}`;
+  const schemaPath = path.join(os.tmpdir(), `schemaforge-schema-${uid}.json`);
+  const instancePath = path.join(os.tmpdir(), `schemaforge-instance-${uid}.json`);
 
-  if (result.error) {
-    throw new Error(
-      "The 'schemaforge' CLI binary was not found on PATH and the native " +
-        'napi extension is not installed. Install @schemaforge/node or ' +
-        'cargo install schemaforge-cli.'
+  try {
+    fs.writeFileSync(schemaPath, schemaStr, 'utf8');
+    fs.writeFileSync(instancePath, instanceStr, 'utf8');
+
+    const result = spawnSync(
+      'schemaforge',
+      ['validate', schemaPath, instancePath],
+      { encoding: 'utf8' }
     );
-  }
-  if (result.status === 0) return [];
 
-  const lines = (result.stderr || '')
-    .trim()
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  return lines.length > 0 ? lines : [`validation failed (exit ${result.status})`];
+    if (result.error) {
+      throw new Error(
+        "The 'schemaforge' CLI binary was not found on PATH and the native " +
+          'napi extension is not installed.\n' +
+          'Install one of:\n' +
+          '  npm install @schemaforge/node   (native)\n' +
+          '  cargo install schemaforge-cli   (CLI only)'
+      );
+    }
+
+    if (result.status === 0) {
+      return [];
+    }
+
+    const stderr = (result.stderr || '').trim();
+    const lines = stderr
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    return lines.length > 0 ? lines : [`validation failed (exit ${result.status})`];
+  } finally {
+    try { fs.unlinkSync(schemaPath); } catch (_) { /* best-effort cleanup */ }
+    try { fs.unlinkSync(instancePath); } catch (_) { /* best-effort cleanup */ }
+  }
 }
 
-function _schemaTypes(schema) {
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
-    return ['null', 'boolean', 'number', 'string', 'array', 'object'];
-  }
-  if (typeof schema.type === 'string') return [schema.type];
-  if (Array.isArray(schema.type)) {
-    return schema.type.filter((item) => typeof item === 'string');
-  }
-  return ['null', 'boolean', 'number', 'string', 'array', 'object'];
-}
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
-function _objectAttributes(schema) {
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return [];
-  if (!schema.properties || typeof schema.properties !== 'object') return [];
-
-  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
-  return Object.entries(schema.properties).map(([name, child]) => {
-    const childSchema =
-      child && (typeof child === 'object' || typeof child === 'boolean') ? child : {};
-    const childObject =
-      child && typeof child === 'object' && !Array.isArray(child) ? child : {};
-    return {
-      name,
-      required: required.has(name),
-      types: _schemaTypes(childSchema),
-      title: typeof childObject.title === 'string' ? childObject.title : null,
-      description:
-        typeof childObject.description === 'string' ? childObject.description : null,
-      format: typeof childObject.format === 'string' ? childObject.format : null,
-      attributes: _objectAttributes(childSchema),
-      schema: childSchema,
-    };
-  });
-}
-
+/**
+ * Validate a JSON instance against a JSON Schema.
+ *
+ * @param {string} schemaStr  JSON Schema as a JSON string.
+ * @param {string} instanceStr  JSON value to validate as a JSON string.
+ * @returns {string[]} Empty array when valid; error messages when invalid.
+ */
 function validateJson(schemaStr, instanceStr) {
   if (_native && typeof _native.validateJson === 'function') {
     return _native.validateJson(schemaStr, instanceStr);
@@ -89,49 +108,46 @@ function validateJson(schemaStr, instanceStr) {
   return _cliValidate(schemaStr, instanceStr);
 }
 
+/**
+ * A compiled JSON Schema handle for repeated validation.
+ */
 class CompiledSchema {
+  /**
+   * @param {string} schemaStr  JSON Schema as a JSON string.
+   */
   constructor(schemaStr) {
     this._schemaStr = schemaStr;
     this._native = null;
-    try {
-      this._schema = JSON.parse(schemaStr);
-    } catch (e) {
-      throw new Error(`schemaStr is not valid JSON: ${e.message}`);
-    }
-    if (
-      typeof this._schema !== 'boolean' &&
-      (!this._schema || typeof this._schema !== 'object' || Array.isArray(this._schema))
-    ) {
-      throw new Error('schemaStr must encode a JSON object or boolean schema');
-    }
 
     if (_native && typeof _native.CompiledSchema === 'function') {
       this._native = new _native.CompiledSchema(schemaStr);
+    } else {
+      try {
+        JSON.parse(schemaStr);
+      } catch (e) {
+        throw new Error(`schemaStr is not valid JSON: ${e.message}`);
+      }
     }
   }
 
+  /**
+   * @param {string} instanceStr  JSON value to validate as a JSON string.
+   * @returns {string[]} Empty array when valid; error messages when invalid.
+   */
   validateJson(instanceStr) {
-    if (this._native !== null) return this._native.validateJson(instanceStr);
-    return _cliValidate(this._schemaStr, instanceStr);
-  }
-
-  /** Return ordered descriptors for root JSON object properties. */
-  objectAttributes() {
-    if (
-      this._native !== null &&
-      typeof this._native.objectAttributesJson === 'function'
-    ) {
-      return JSON.parse(this._native.objectAttributesJson());
+    if (this._native !== null) {
+      return this._native.validateJson(instanceStr);
     }
-    return _objectAttributes(this._schema);
-  }
-
-  /** Return one root attribute by its exact JSON property name. */
-  objectAttribute(name) {
-    return this.objectAttributes().find((attribute) => attribute.name === name) || null;
+    return _cliValidate(this._schemaStr, instanceStr);
   }
 }
 
+/**
+ * Compile a JSON Schema string into a CompiledSchema handle.
+ *
+ * @param {string} schemaStr  JSON Schema as a JSON string.
+ * @returns {CompiledSchema}
+ */
 function compileSchema(schemaStr) {
   return new CompiledSchema(schemaStr);
 }

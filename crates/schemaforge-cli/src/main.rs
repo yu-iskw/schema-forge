@@ -98,9 +98,6 @@ struct GenerateArgs {
     /// Write output to FILE instead of stdout.
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
-    /// Pretty-print the IR JSON (only relevant when used as `compile`).
-    #[arg(short, long)]
-    pretty: bool,
 }
 
 #[derive(Debug, clap::Args)]

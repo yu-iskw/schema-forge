@@ -1,137 +1,53 @@
 //! Python bindings for Schemaforge.
 //!
 //! This crate exposes a pure-Rust API suitable for wrapping with PyO3.
-//! Actual PyO3 FFI is guarded behind the `pyo3` feature flag. Without the
-//! flag this crate compiles as a safe Rust library providing the same logic.
+//! Actual PyO3 FFI is guarded behind the `pyo3` feature flag (which requires
+//! `unsafe_code` and is documented in ADR-0003).  Without the flag this crate
+//! compiles as a safe Rust library providing the same logic.
+//!
+//! Validation uses [`schemaforge_bindings::CompiledSchema`] which constructs a
+//! [`schemaforge_jsonschema::Validator`] directly — no IR compilation pass.
+//!
+//! # Public API
+//!
+//! ```rust
+//! use schemaforge_python::{compile_schema, validate_json};
+//!
+//! // One-shot validation returning errors as strings
+//! validate_json(r#"{"type":"string"}"#, r#""hello""#).unwrap();
+//!
+//! // Compile once, validate many times
+//! let cs = compile_schema(r#"{"type":"number"}"#).unwrap();
+//! assert!(cs.validate_json("42").unwrap().is_empty());
+//! ```
 
-use schemaforge_compiler::{CompileError, Compiler, CompilerOptions};
-use schemaforge_ir::{ObjectAttribute, SchemaIr};
-use schemaforge_jsonschema::{ValidationOptions, Validator};
-use serde_json::Value;
-use thiserror::Error;
-
-/// Error type for the Python binding layer.
-#[derive(Debug, Error)]
-pub enum PyBindingError {
-    /// Compilation failed.
-    #[error("compile error: {0}")]
-    Compile(#[from] CompileError),
-    /// JSON parsing failed.
-    #[error("JSON parse error: {0}")]
-    JsonParse(String),
-    /// JSON serialization failed.
-    #[error("JSON serialization error: {0}")]
-    JsonSerialize(String),
-    /// Validation setup failed.
-    #[error("schema error: {0}")]
-    Schema(#[from] schemaforge_jsonschema::SchemaError),
-}
-
-/// A compiled schema handle suitable for repeated validation and introspection.
-pub struct CompiledSchema {
-    ir: SchemaIr,
-    validator: Validator,
-}
-
-impl CompiledSchema {
-    /// Compile a JSON Schema from a JSON string.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PyBindingError`] when the schema is invalid JSON or fails
-    /// compilation.
-    pub fn from_json(schema_json: &str) -> Result<Self, PyBindingError> {
-        let mut compiler = Compiler::with_options(CompilerOptions::default());
-        let ir = compiler.compile_json("py://schema", schema_json)?;
-        let schema_val: Value = serde_json::from_str(schema_json)
-            .map_err(|e| PyBindingError::JsonParse(e.to_string()))?;
-        let validator = Validator::new(&schema_val, ValidationOptions::default())?;
-        Ok(Self { ir, validator })
-    }
-
-    /// Validate a JSON instance string against the compiled schema.
-    ///
-    /// Returns an empty `Vec` when the instance is valid, or a `Vec` of error
-    /// message strings when it is invalid.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PyBindingError::JsonParse`] when `instance_json` is not valid
-    /// JSON.
-    pub fn validate_json(&self, instance_json: &str) -> Result<Vec<String>, PyBindingError> {
-        let instance: Value = serde_json::from_str(instance_json)
-            .map_err(|e| PyBindingError::JsonParse(e.to_string()))?;
-        let output = self.validator.validate(&instance);
-        if output.is_valid() {
-            Ok(vec![])
-        } else {
-            Ok(output.errors.iter().map(|e| e.message.clone()).collect())
-        }
-    }
-
-    /// Return descriptors for the root schema's declared JSON object fields.
-    ///
-    /// Each descriptor includes the source property name, requiredness,
-    /// accepted JSON types, title, description, format, nested attributes, and
-    /// the complete compiled child schema. Source declaration order is kept.
-    #[must_use]
-    pub fn object_attributes(&self) -> Vec<ObjectAttribute> {
-        self.ir.object_attributes()
-    }
-
-    /// Return a single root object attribute by its JSON property name.
-    #[must_use]
-    pub fn object_attribute(&self, name: &str) -> Option<ObjectAttribute> {
-        self.ir.object_attribute(name)
-    }
-
-    /// Return object attribute descriptors encoded as JSON.
-    ///
-    /// This method is intended as a simple PyO3 boundary: the native module can
-    /// either convert the returned JSON to Python dictionaries or expose the
-    /// string directly.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PyBindingError::JsonSerialize`] if serialization fails.
-    pub fn object_attributes_json(&self) -> Result<String, PyBindingError> {
-        serde_json::to_string(&self.object_attributes())
-            .map_err(|e| PyBindingError::JsonSerialize(e.to_string()))
-    }
-
-    /// Access the compiled IR.
-    #[must_use]
-    pub const fn ir(&self) -> &SchemaIr {
-        &self.ir
-    }
-}
+pub use schemaforge_bindings::{BindingError as PyBindingError, CompiledSchema};
 
 /// Compile a JSON Schema string into a [`CompiledSchema`] handle.
 ///
+/// This is the preferred entry point when validating the same schema against
+/// multiple instances.
+///
 /// # Errors
 ///
-/// Returns [`PyBindingError`] when the schema string is not valid JSON or
-/// fails the Schemaforge compilation pipeline.
+/// Returns [`PyBindingError`] when the schema string is not valid JSON or the
+/// validator cannot be constructed from the schema.
 pub fn compile_schema(schema_json: &str) -> Result<CompiledSchema, PyBindingError> {
     CompiledSchema::from_json(schema_json)
 }
 
 /// Validate a JSON instance against a JSON Schema (both as strings).
 ///
+/// Returns `Ok(())` when the instance is valid.  Returns
+/// `Err(errors)` where `errors` is a `Vec<String>` of human-readable
+/// validation error messages when the instance is invalid.
+///
 /// # Errors
 ///
-/// Returns validation messages when the instance does not conform to the
-/// schema, or when either argument cannot be parsed as JSON.
+/// Returns `Err` with validation error messages when the instance does not
+/// conform to the schema, or when either argument cannot be parsed as JSON.
 pub fn validate_json(schema_json: &str, instance_json: &str) -> Result<(), Vec<String>> {
-    let compiled = CompiledSchema::from_json(schema_json).map_err(|e| vec![e.to_string()])?;
-    let errors = compiled
-        .validate_json(instance_json)
-        .map_err(|e| vec![e.to_string()])?;
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
+    schemaforge_bindings::validate_json(schema_json, instance_json)
 }
 
 #[cfg(test)]
@@ -166,40 +82,5 @@ mod tests {
     #[test]
     fn invalid_schema_json_error() {
         assert!(compile_schema("{broken").is_err());
-    }
-
-    #[test]
-    fn compiled_schema_ir_accessible() {
-        let cs = compile_schema(r#"{"type":"object"}"#).unwrap();
-        let _ = cs.ir();
-    }
-
-    #[test]
-    fn compiled_schema_exposes_object_attributes() {
-        let cs = compile_schema(
-            r#"{
-                "type":"object",
-                "required":["id"],
-                "properties":{
-                    "id":{"type":"string","format":"uuid"},
-                    "profile":{
-                        "type":"object",
-                        "properties":{"displayName":{"type":"string"}}
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
-
-        let attributes = cs.object_attributes();
-        assert_eq!(attributes.len(), 2);
-        assert_eq!(attributes[0].name, "id");
-        assert!(attributes[0].required);
-        assert_eq!(attributes[0].format.as_deref(), Some("uuid"));
-        assert_eq!(attributes[1].attributes[0].name, "displayName");
-        assert!(cs.object_attribute("missing").is_none());
-
-        let json = cs.object_attributes_json().unwrap();
-        assert!(json.contains("displayName"));
     }
 }

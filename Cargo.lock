@@ -656,6 +656,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemaforge-bindings"
+version = "0.1.0"
+dependencies = [
+ "schemaforge-jsonschema",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "schemaforge-cli"
 version = "0.1.0"
 dependencies = [
@@ -693,7 +702,6 @@ dependencies = [
  "schemaforge-ir",
  "schemaforge-jsonschema",
  "schemaforge-resolver",
- "schemaforge-runtime",
  "schemaforge-source",
  "serde",
  "serde-saphyr",
@@ -761,12 +769,9 @@ dependencies = [
 name = "schemaforge-node"
 version = "0.1.0"
 dependencies = [
- "schemaforge-compiler",
- "schemaforge-ir",
- "schemaforge-jsonschema",
+ "schemaforge-bindings",
  "serde",
  "serde_json",
- "thiserror",
 ]
 
 [[package]]
@@ -788,12 +793,9 @@ dependencies = [
 name = "schemaforge-python"
 version = "0.1.0"
 dependencies = [
- "schemaforge-compiler",
- "schemaforge-ir",
- "schemaforge-jsonschema",
+ "schemaforge-bindings",
  "serde",
  "serde_json",
- "thiserror",
 ]
 
 [[package]]

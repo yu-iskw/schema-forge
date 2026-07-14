@@ -1,5 +1,5 @@
 [package]
-name = "schemaforge-node"
+name = "schemaforge-bindings"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,14 +8,12 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Node.js bindings for Schemaforge (feature-gated FFI via napi-rs)."
+description = "Shared validation helpers for Schemaforge Python and Node.js bindings."
 
 [dependencies]
-schemaforge-bindings.workspace = true
-
-[dev-dependencies]
-serde.workspace = true
+schemaforge-jsonschema.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

@@ -26,7 +26,6 @@ use schemaforge_ir::{
     StringConstraints, TypeSet,
 };
 use schemaforge_resolver::{OfflineResolver, ResolveError, Resolver};
-use schemaforge_runtime::RUNTIME_PLAN;
 use schemaforge_source::SourceMap;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -78,8 +77,6 @@ impl Default for CompilerOptions {
 
 /// The Schemaforge compiler: transforms source text into an IR.
 pub struct Compiler {
-    #[allow(dead_code)]
-    options: CompilerOptions,
     resolver: Arc<dyn Resolver>,
     source_map: SourceMap,
 }
@@ -88,18 +85,17 @@ impl Compiler {
     /// Create a new compiler with default options and offline resolver.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_options(CompilerOptions::default())
+        Self::with_options(&CompilerOptions::default())
     }
 
     /// Create a new compiler with custom options.
     #[must_use]
-    pub fn with_options(options: CompilerOptions) -> Self {
+    pub fn with_options(options: &CompilerOptions) -> Self {
         let mut resolver = OfflineResolver::new();
         for (uri, schema) in &options.preloaded_schemas {
             resolver.register(uri.clone(), schema.clone());
         }
         Self {
-            options,
             resolver: Arc::new(resolver),
             source_map: SourceMap::new(),
         }
@@ -140,7 +136,6 @@ impl Compiler {
         digest: &str,
     ) -> Result<SchemaIr, CompileError> {
         let dialect = detect(value);
-        let _ = RUNTIME_PLAN;
         let root = lower_schema(value, uri, &*self.resolver)?;
         Ok(SchemaIr::new(root, dialect.uri(), digest, uri))
     }
@@ -376,6 +371,17 @@ fn lower_defs(
             .insert(k.clone(), lower_schema(v, base_uri, resolver)?);
     }
     Ok(())
+}
+
+/// Shared test helper: wrap a [`SchemaNode`] in a minimal [`SchemaIr`].
+#[cfg(test)]
+pub(crate) fn make_test_ir(root: SchemaNode) -> SchemaIr {
+    SchemaIr::new(
+        root,
+        "https://json-schema.org/draft/2020-12/schema",
+        "digest",
+        "test://s",
+    )
 }
 
 /// Compute the SHA-256 hex digest of `bytes`.
