@@ -95,7 +95,25 @@ fn load_from_path(
 ) -> Result<Value, ResolveError> {
     let path = uri_to_jailed_path(uri, base_dir)?;
 
-    // Open the file first to obtain a stable file descriptor before reading.
+    // Pre-open file-type gate: stat the jailed path before calling File::open.
+    // On Unix, stat(2) on a FIFO path does not block — only open(2) for
+    // reading blocks until a writer connects.  By checking here we reject
+    // FIFOs, devices, sockets, and directories without ever blocking.
+    // metadata() follows symlinks (like open would), so symlinks to regular
+    // files inside the jail proceed normally; the subsequent post_open_canonical
+    // jail check is still authoritative for symlink-escape detection.
+    let pre_meta = std::fs::metadata(&path).map_err(|e| ResolveError::IoError {
+        uri: uri.to_owned(),
+        reason: e.to_string(),
+    })?;
+    if !pre_meta.file_type().is_file() {
+        return Err(ResolveError::IoError {
+            uri: uri.to_owned(),
+            reason: "not a regular file (FIFO, device, socket, or directory)".to_owned(),
+        });
+    }
+
+    // Open the file to obtain a stable file descriptor before reading.
     // This narrows the TOCTOU window: a symlink created between the initial
     // jail check and open will be resolved by the OS at open time, and then
     // caught by the re-canonicalize check below before any bytes are read.
@@ -496,19 +514,12 @@ mod tests {
             .expect("mkfifo command not found");
         assert!(status.success(), "mkfifo failed: {status}");
 
-        let fifo_clone = fifo.clone();
-        let writer = std::thread::spawn(move || {
-            let _w = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&fifo_clone)
-                .ok();
-        });
-
+        // No writer thread needed: the pre-open metadata check detects the FIFO
+        // type via stat(2) and rejects it before File::open is called.
+        // stat(2) on a FIFO path never blocks; only open(2) for reading blocks.
         let r = FileResolver::with_base_dir(&dir);
         let uri = format!("file://{}", fifo.display());
         let result = r.resolve("", &uri);
-
-        let _ = writer.join();
 
         assert!(
             matches!(result, Err(ResolveError::IoError { .. })),

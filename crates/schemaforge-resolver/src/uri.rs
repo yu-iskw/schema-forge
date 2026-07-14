@@ -1,14 +1,12 @@
 //! URI helpers: normalization, resolution, fragment stripping.
 
-/// Apply RFC 3986 Section 5.2.4 remove-dot-segments to a URI path component.
+/// Remove-dot-segments for `file://` URIs.
 ///
-/// Handles `.` (current directory) and `..` (parent directory) path segments
-/// so that `file:///a/./b.json` and `file:///a/b.json` produce the same path.
-///
-/// Empty segments beyond the leading one are also dropped, which collapses
-/// duplicate slashes (`//`) and strips a trailing `/`.  The leading empty
-/// segment of an absolute path (e.g. `""` before `/a/b`) is preserved so
-/// that the result remains rooted.
+/// Handles `.` and `..` path segments and additionally collapses duplicate
+/// slashes (`//`) and strips a trailing `/`, so that filesystem aliases such
+/// as `file:///tmp//a.json` and `file:///tmp/a.json` map to the same key.
+/// The leading empty segment of an absolute path is preserved so the result
+/// remains rooted.
 fn remove_dot_segments(path: &str) -> String {
     let mut stack: Vec<&str> = Vec::new();
     for (i, seg) in path.split('/').enumerate() {
@@ -30,6 +28,33 @@ fn remove_dot_segments(path: &str) -> String {
     let joined = stack.join("/");
     // A pure-slash path (e.g. `/`) leaves only the leading `""` on the stack,
     // which joins to an empty string.  Restore the canonical root `/`.
+    if joined.is_empty() && path.starts_with('/') {
+        "/".to_owned()
+    } else {
+        joined
+    }
+}
+
+/// RFC 3986 Section 5.2.4 remove-dot-segments for non-`file://` URIs.
+///
+/// Only eliminates `.` (current-dir) and `..` (parent-dir) segments.
+/// Empty segments from `//` and the trailing empty segment from a trailing `/`
+/// are **preserved**, so that `https://example.com/api/` and
+/// `https://example.com/api` remain distinct registry keys.
+fn remove_dot_segments_rfc3986(path: &str) -> String {
+    let mut stack: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            ".." => {
+                if stack.last().is_some_and(|s: &&str| !s.is_empty()) {
+                    stack.pop();
+                }
+            }
+            "." => {}
+            other => stack.push(other),
+        }
+    }
+    let joined = stack.join("/");
     if joined.is_empty() && path.starts_with('/') {
         "/".to_owned()
     } else {
@@ -68,9 +93,18 @@ pub(crate) fn casefold_file_uri_path(uri: String) -> String {
     )
 }
 
-/// Normalize the path component of a `scheme://authority/path` URI by applying
-/// RFC 3986 remove-dot-segments.  The scheme, authority, query, and fragment
-/// are left unchanged.  URIs without `://` (e.g. URNs) are returned as-is.
+/// Normalize the path component of a `scheme://authority/path` URI.
+///
+/// - For `file://` URIs: applies [`remove_dot_segments`], which collapses
+///   duplicate slashes and strips trailing slashes so filesystem aliases map
+///   to the same key.
+/// - For all other schemes (http, https, urn, …): applies
+///   [`remove_dot_segments_rfc3986`], which only removes `.` and `..`
+///   segments; empty segments and trailing slashes are preserved so that
+///   `https://example.com/api/` and `https://example.com/api` remain distinct.
+/// - URIs without `://` (e.g. URNs) are returned as-is.
+///
+/// The scheme, authority, query, and fragment are never modified.
 pub(crate) fn normalize_path_in_uri(uri: &str) -> String {
     // Locate where the authority ends and the path begins.
     let path_start = uri.find("://").and_then(|dslash| {
@@ -95,7 +129,13 @@ pub(crate) fn normalize_path_in_uri(uri: &str) -> String {
         (&path_and_query[..i], &path_and_query[i..])
     });
 
-    format!("{prefix}{}{query}{fragment}", remove_dot_segments(path))
+    let normalized = if uri.starts_with("file://") {
+        remove_dot_segments(path)
+    } else {
+        remove_dot_segments_rfc3986(path)
+    };
+
+    format!("{prefix}{normalized}{query}{fragment}")
 }
 
 /// Normalize a URI for use as a registry key.
@@ -324,6 +364,74 @@ mod tests {
         assert_eq!(
             normalize_path_in_uri("file:///tmp/schema.json/#diskOnly"),
             "file:///tmp/schema.json#diskOnly"
+        );
+    }
+
+    // ── Scheme-specific normalization (https vs file) ─────────────────────────
+
+    #[test]
+    fn normalize_uri_https_trailing_slash_is_preserved() {
+        // https:// trailing slash must NOT be stripped — it is a distinct key.
+        assert_eq!(
+            normalize_uri("https://example.com/api/".to_string()),
+            "https://example.com/api/"
+        );
+    }
+
+    #[test]
+    fn normalize_uri_https_no_trailing_slash_is_preserved() {
+        assert_eq!(
+            normalize_uri("https://example.com/api".to_string()),
+            "https://example.com/api"
+        );
+    }
+
+    #[test]
+    fn normalize_uri_https_trailing_slash_and_no_trailing_slash_are_distinct() {
+        let with_slash = normalize_uri("https://example.com/api/".to_string());
+        let without_slash = normalize_uri("https://example.com/api".to_string());
+        assert_ne!(
+            with_slash, without_slash,
+            "https trailing slash must not be stripped: '{with_slash}' vs '{without_slash}'"
+        );
+    }
+
+    #[test]
+    fn normalize_uri_https_double_slash_is_preserved() {
+        // Double slash in an https path is not collapsed (only . and .. removed).
+        assert_eq!(
+            normalize_uri("https://example.com/api//v2".to_string()),
+            "https://example.com/api//v2"
+        );
+    }
+
+    #[test]
+    fn normalize_uri_https_dot_segments_are_removed() {
+        assert_eq!(
+            normalize_uri("https://example.com/a/./b.json".to_string()),
+            "https://example.com/a/b.json"
+        );
+        assert_eq!(
+            normalize_uri("https://example.com/a/b/../c.json".to_string()),
+            "https://example.com/a/c.json"
+        );
+    }
+
+    #[test]
+    fn normalize_uri_file_double_slash_collapses() {
+        // file:// double slash is still collapsed.
+        assert_eq!(
+            normalize_uri("file:///tmp//a.json".to_string()),
+            "file:///tmp/a.json"
+        );
+    }
+
+    #[test]
+    fn normalize_uri_file_trailing_slash_is_stripped() {
+        // file:// trailing slash is still stripped.
+        assert_eq!(
+            normalize_uri("file:///tmp/schema.json/".to_string()),
+            "file:///tmp/schema.json"
         );
     }
 
