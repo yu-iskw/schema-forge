@@ -398,9 +398,11 @@ fn cmd_vendor(args: &VendorArgs) -> Result<(), CliError> {
 fn cmd_lock(args: &LockArgs) -> Result<(), CliError> {
     let bytes = std::fs::read(&args.schema)?;
     let digest = sha256_hex(&bytes);
+    let size = bytes.len();
     let uri = file_uri(&args.schema);
-    let entry = schemaforge_compiler::LockEntry::new(uri, digest);
-    let toml = schemaforge_compiler::format_lock_toml(&[entry]);
+    let mut lock_file = schemaforge_resolver::LockFile::new();
+    lock_file.upsert(schemaforge_resolver::LockEntry { uri, digest, size });
+    let toml = lock_file.to_toml()?;
     let out_path = args
         .output
         .as_deref()

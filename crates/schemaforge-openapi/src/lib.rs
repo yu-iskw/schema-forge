@@ -380,6 +380,8 @@ fn adapt_oas30_schema(schema: &Value) -> Value {
         return schema.clone();
     };
     let mut new_obj = obj.clone();
+
+    // Handle nullable at this level.
     if new_obj
         .get("nullable")
         .and_then(Value::as_bool)
@@ -389,7 +391,47 @@ fn adapt_oas30_schema(schema: &Value) -> Value {
         let type_val = new_obj.get("type").cloned().unwrap_or(Value::Null);
         new_obj.insert("type".to_owned(), make_nullable_type(type_val));
     }
+
+    // Recurse into all sub-schema locations.
+    adapt_map_values(&mut new_obj, "properties");
+    adapt_map_values(&mut new_obj, "$defs");
+    adapt_map_values(&mut new_obj, "definitions");
+    adapt_single(&mut new_obj, "items");
+    adapt_single(&mut new_obj, "additionalProperties");
+    adapt_single(&mut new_obj, "not");
+    adapt_array_values(&mut new_obj, "prefixItems");
+    adapt_array_values(&mut new_obj, "allOf");
+    adapt_array_values(&mut new_obj, "anyOf");
+    adapt_array_values(&mut new_obj, "oneOf");
+
     Value::Object(new_obj)
+}
+
+/// Recursively adapt every value in an object-typed keyword (e.g. `properties`).
+fn adapt_map_values(obj: &mut serde_json::Map<String, Value>, key: &str) {
+    if let Some(Value::Object(map)) = obj.get_mut(key) {
+        let adapted: serde_json::Map<String, Value> = map
+            .iter()
+            .map(|(k, v)| (k.clone(), adapt_oas30_schema(v)))
+            .collect();
+        *map = adapted;
+    }
+}
+
+/// Recursively adapt a single sub-schema keyword (e.g. `items`, `not`).
+fn adapt_single(obj: &mut serde_json::Map<String, Value>, key: &str) {
+    if let Some(v) = obj.get(key) {
+        let adapted = adapt_oas30_schema(v);
+        obj.insert(key.to_owned(), adapted);
+    }
+}
+
+/// Recursively adapt every element of an array-typed keyword (e.g. `allOf`).
+fn adapt_array_values(obj: &mut serde_json::Map<String, Value>, key: &str) {
+    if let Some(Value::Array(arr)) = obj.get_mut(key) {
+        let adapted: Vec<Value> = arr.iter().map(adapt_oas30_schema).collect();
+        *arr = adapted;
+    }
 }
 
 fn make_nullable_type(existing: Value) -> Value {
@@ -512,6 +554,50 @@ mod tests {
         let schema = json!({"type": "string"});
         let adapted = adapt_oas30_schema(&schema);
         assert_eq!(adapted["type"], json!("string"));
+    }
+
+    #[test]
+    fn adapt_oas30_nullable_recursive_properties() {
+        // A nullable field nested inside `properties` must also be adapted.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "nullable": true},
+                "count": {"type": "integer"}
+            }
+        });
+        let adapted = adapt_oas30_schema(&schema);
+        let name_types = adapted["properties"]["name"]["type"].as_array().unwrap();
+        assert!(
+            name_types.contains(&json!("null")),
+            "nested nullable property must have null in type array"
+        );
+        assert!(
+            name_types.contains(&json!("string")),
+            "nested property must retain original type"
+        );
+        assert!(
+            adapted["properties"]["name"].get("nullable").is_none(),
+            "nullable key must be removed from nested property"
+        );
+        // Non-nullable sibling must be untouched.
+        assert_eq!(adapted["properties"]["count"]["type"], json!("integer"));
+    }
+
+    #[test]
+    fn adapt_oas30_nullable_recursive_allof() {
+        let schema = json!({
+            "allOf": [
+                {"type": "string", "nullable": true},
+                {"type": "integer"}
+            ]
+        });
+        let adapted = adapt_oas30_schema(&schema);
+        let first = &adapted["allOf"][0];
+        let types = first["type"].as_array().unwrap();
+        assert!(types.contains(&json!("null")));
+        assert!(types.contains(&json!("string")));
+        assert!(first.get("nullable").is_none());
     }
 
     // ── Swagger 2.0 fixtures ──────────────────────────────────────────────────

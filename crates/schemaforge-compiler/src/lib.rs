@@ -9,15 +9,12 @@
 //!
 //! - [`inspect`]: inspect a compiled IR (dialect, node count, capabilities).
 //! - [`explain`]: explain representation strategy and codegen decisions.
-//! - [`lock`]: build and format lock-file entries.
 
 pub mod explain;
 pub mod inspect;
-pub mod lock;
 
 pub use explain::{ExplainResult, explain_ir};
 pub use inspect::{InspectResult, inspect_ir};
-pub use lock::{LockEntry, format_lock_toml};
 
 use indexmap::IndexMap;
 use schemaforge_dialect::detect;

@@ -16,6 +16,7 @@
 //! are made in a single pass per node, sharing a consistent view of how each
 //! schema node should be mapped to Rust.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use indexmap::IndexMap;
@@ -139,8 +140,10 @@ fn emit_defs(
     options: &CodegenOptions,
     buf: &mut String,
 ) -> Result<(), CodegenError> {
+    let mut used_names: HashSet<String> = HashSet::new();
     for (idx, (def_name, def_node)) in node.defs.iter().enumerate() {
-        let type_name = sanitize_type_name(def_name, idx);
+        let raw_name = sanitize_type_name(def_name, idx);
+        let type_name = unique_name(&raw_name, &mut used_names);
         let inferred = analyse(def_node).map_err(|e| CodegenError::Unsupported {
             path: format!("$defs/{def_name}"),
             reason: e.to_string(),
@@ -223,8 +226,10 @@ fn emit_struct_fields(
     options: &CodegenOptions,
     buf: &mut String,
 ) -> Result<(), CodegenError> {
+    let mut used_names: HashSet<String> = HashSet::new();
     for (idx, (key, prop_inferred)) in props.iter().enumerate() {
-        let field_name = sanitize_field_name(key, idx);
+        let raw_name = sanitize_field_name(key, idx);
+        let field_name = unique_name(&raw_name, &mut used_names);
         let rust_type = inferred_to_rust_type(prop_inferred);
         let optional = options.wrap_optional && !required.contains(key);
         // Always emit a properly escaped serde rename attribute so that the
@@ -457,12 +462,18 @@ const fn inferred_to_rust_type(inferred: &schemaforge_analysis::InferredNode) ->
         return "serde_json::Value";
     }
     let t = &inferred.types;
+    // A single-type schema contains exactly one of these flags plus nothing else.
+    let no_other = !t.string && !t.boolean && !t.array && !t.object && !t.null;
     if t.string && !t.number && !t.boolean && !t.array && !t.object && !t.null {
         "String"
-    } else if t.integer && !t.string && !t.boolean && !t.array && !t.object && !t.null {
-        "i64"
-    } else if t.number && !t.string && !t.boolean && !t.array && !t.object && !t.null {
+    } else if t.number && no_other {
+        // `{"type":"number"}` sets number=true AND integer=true in TypeSet
+        // because number is a superset of integer. Check number before integer
+        // so the presence of `number` always wins and yields f64.
         "f64"
+    } else if t.integer && !t.number && no_other {
+        // integer-only (number is false): i64.
+        "i64"
     } else if t.boolean && !t.string && !t.number && !t.array && !t.object && !t.null {
         "bool"
     } else {
@@ -495,6 +506,24 @@ fn to_pascal_case(s: &str) -> String {
             })
         })
         .collect()
+}
+
+// ── Collision-free name allocation ───────────────────────────────────────────
+
+/// Return `proposed` if it is not yet in `used`, otherwise append `_1`, `_2`,
+/// … until a free name is found.  The chosen name is inserted into `used`.
+fn unique_name(proposed: &str, used: &mut HashSet<String>) -> String {
+    if used.insert(proposed.to_owned()) {
+        return proposed.to_owned();
+    }
+    let mut i = 1usize;
+    loop {
+        let candidate = format!("{proposed}_{i}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        i += 1;
+    }
 }
 
 // ── Identifier sanitization and string escaping ──────────────────────────────
@@ -682,6 +711,50 @@ mod tests {
         let ir = simple_ir(&type_val("integer"));
         let code = generate(&ir, &CodegenOptions::default()).unwrap();
         assert!(code.contains("pub type Root = i64;"));
+    }
+
+    #[test]
+    fn generate_number_alias_produces_f64() {
+        // {"type":"number"} must generate f64, not i64, even though TypeSet
+        // sets integer=true as a superset flag when number is present.
+        let ir = simple_ir(&type_val("number"));
+        let code = generate(&ir, &CodegenOptions::default()).unwrap();
+        assert!(
+            code.contains("pub type Root = f64;"),
+            "expected f64 for number schema, got:\n{code}"
+        );
+        assert!(
+            !code.contains("pub type Root = i64;"),
+            "i64 must not appear for number schema:\n{code}"
+        );
+    }
+
+    #[test]
+    fn field_name_collision_foo_bar_vs_foo_underscore_bar() {
+        // "foo-bar" and "foo_bar" both sanitize to "foo_bar".
+        // The second one must be renamed to "foo_bar_1" to avoid a duplicate.
+        let prop = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            ..SchemaNode::default()
+        };
+        let mut props = indexmap::IndexMap::new();
+        props.insert("foo-bar".to_owned(), prop.clone());
+        props.insert("foo_bar".to_owned(), prop);
+        let root = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            properties: props,
+            ..SchemaNode::default()
+        };
+        let ir = SchemaIr::new(root, "", "abc", "test://");
+        let code = generate(&ir, &CodegenOptions::default()).unwrap();
+        assert!(
+            code.contains("pub foo_bar:"),
+            "expected foo_bar field in:\n{code}"
+        );
+        assert!(
+            code.contains("pub foo_bar_1:"),
+            "expected collision-renamed foo_bar_1 field in:\n{code}"
+        );
     }
 
     #[test]

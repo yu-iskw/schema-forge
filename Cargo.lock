@@ -674,6 +674,7 @@ dependencies = [
  "schemaforge-ir",
  "schemaforge-jsonschema",
  "schemaforge-openapi",
+ "schemaforge-resolver",
  "serde_json",
  "thiserror",
 ]
