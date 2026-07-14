@@ -50,9 +50,11 @@ function _cliValidate(schemaStr, instanceStr) {
     throw new Error(`instanceStr is not valid JSON: ${e.message}`);
   }
 
-  const uid = `${process.pid}-${Date.now()}`;
-  const schemaPath = path.join(os.tmpdir(), `schemaforge-schema-${uid}.json`);
-  const instancePath = path.join(os.tmpdir(), `schemaforge-instance-${uid}.json`);
+  // Use a private temp directory so file names are unpredictable and cleanup
+  // is atomic: remove the whole dir in the finally block.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'schemaforge-'));
+  const schemaPath = path.join(tmpDir, 'schema.json');
+  const instancePath = path.join(tmpDir, 'instance.json');
 
   try {
     fs.writeFileSync(schemaPath, schemaStr, 'utf8');
@@ -85,8 +87,7 @@ function _cliValidate(schemaStr, instanceStr) {
       .filter(Boolean);
     return lines.length > 0 ? lines : [`validation failed (exit ${result.status})`];
   } finally {
-    try { fs.unlinkSync(schemaPath); } catch (_) { /* best-effort cleanup */ }
-    try { fs.unlinkSync(instancePath); } catch (_) { /* best-effort cleanup */ }
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { /* best-effort cleanup */ }
   }
 }
 

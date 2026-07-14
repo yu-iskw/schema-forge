@@ -1,7 +1,9 @@
 //! Core compilation pipeline: JSON Schema source → Schemaforge IR.
 //!
 //! The [`Compiler`] accepts raw JSON or YAML source, detects the dialect,
-//! resolves `$ref` references, and produces a [`SchemaIr`].
+//! lowers local `$ref` references (fragments pointing into `#/$defs/…` or
+//! the document root `#`), and produces a [`SchemaIr`].  External `$ref`
+//! URIs are not yet fetched; they produce [`CompileError::UnresolvedRef`].
 //!
 //! # Helper modules
 //!
@@ -25,7 +27,7 @@ use schemaforge_ir::{
     ArrayConstraints, NumericBound, NumericConstraints, ObjectConstraints, SchemaIr, SchemaNode,
     StringConstraints, TypeSet,
 };
-use schemaforge_resolver::{OfflineResolver, ResolveError, Resolver};
+use schemaforge_resolver::{OfflineResolver, Resolver};
 use schemaforge_source::SourceMap;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -41,13 +43,16 @@ pub enum CompileError {
     #[error("YAML parse error: {0}")]
     YamlParse(String),
     /// A `$ref` could not be resolved.
-    #[error("unresolved ref `{uri}`: {source}")]
+    ///
+    /// For local fragment refs (`#/…`) this means the JSON Pointer did not
+    /// point to an existing location in the document.  External URI refs are
+    /// not yet resolved and always produce this error.
+    #[error("unresolved ref `{uri}`: {reason}")]
     UnresolvedRef {
-        /// The unresolvable URI.
+        /// The unresolvable URI or JSON Pointer.
         uri: String,
-        /// The underlying resolve error.
-        #[source]
-        source: ResolveError,
+        /// Human-readable reason the ref could not be lowered.
+        reason: String,
     },
     /// The dialect is not supported.
     #[error("unsupported dialect: {0}")]
@@ -77,6 +82,9 @@ impl Default for CompilerOptions {
 
 /// The Schemaforge compiler: transforms source text into an IR.
 pub struct Compiler {
+    // Retained for future external-$ref resolution; currently unused while
+    // only local fragment refs (#/…) are lowered.
+    #[allow(dead_code)]
     resolver: Arc<dyn Resolver>,
     source_map: SourceMap,
 }
@@ -129,6 +137,9 @@ impl Compiler {
         self.compile_value(uri, &value, &digest)
     }
 
+    // `self` is intentionally kept here so this method can be reconnected to
+    // `self.resolver` when external $ref resolution is added back.
+    #[allow(clippy::unused_self)]
     fn compile_value(
         &self,
         uri: &str,
@@ -136,7 +147,8 @@ impl Compiler {
         digest: &str,
     ) -> Result<SchemaIr, CompileError> {
         let dialect = detect(value);
-        let root = lower_schema(value, uri, &*self.resolver)?;
+        let mut ctx = LowerCtx::new(value);
+        let root = lower_schema(value, &mut ctx)?;
         Ok(SchemaIr::new(root, dialect.uri(), digest, uri))
     }
 
@@ -153,25 +165,81 @@ impl Default for Compiler {
     }
 }
 
+/// Context threaded through schema lowering; carries the root document for
+/// local `$ref` resolution and a visiting stack to detect reference cycles.
+struct LowerCtx<'a> {
+    /// The root document value, used to follow `#/…` JSON-pointer references.
+    root: &'a Value,
+    /// JSON Pointer strings of `$ref`s currently being lowered (cycle guard).
+    visiting: Vec<String>,
+}
+
+impl<'a> LowerCtx<'a> {
+    const fn new(root: &'a Value) -> Self {
+        Self {
+            root,
+            visiting: Vec::new(),
+        }
+    }
+}
+
 /// Lower a JSON Schema [`Value`] into an IR [`SchemaNode`].
-fn lower_schema(
-    value: &Value,
-    base_uri: &str,
-    resolver: &dyn Resolver,
-) -> Result<SchemaNode, CompileError> {
+fn lower_schema(value: &Value, ctx: &mut LowerCtx<'_>) -> Result<SchemaNode, CompileError> {
     match value {
         Value::Bool(true) => Ok(SchemaNode::boolean_schema(true)),
         Value::Bool(false) => Ok(SchemaNode::boolean_schema(false)),
-        Value::Object(obj) => lower_object_schema(obj, base_uri, resolver),
+        Value::Object(obj) => lower_object_schema(obj, ctx),
         _ => Ok(SchemaNode::any()),
     }
 }
 
+/// Resolve a local fragment `$ref` (e.g. `#`, `#/$defs/Foo`) into an IR node.
+///
+/// If the same ref appears in the current call stack (cycle), an open `any`
+/// schema is returned to break the recursion without losing compilation.
+fn lower_local_ref(ref_str: &str, ctx: &mut LowerCtx<'_>) -> Result<SchemaNode, CompileError> {
+    if ctx.visiting.iter().any(|v| v == ref_str) {
+        // Cycle detected – return an open schema to stop infinite recursion.
+        return Ok(SchemaNode::any());
+    }
+    // Clone the target so that `ctx` is free to be mutably borrowed during
+    // the recursive lowering call (the root document is small-ish in practice).
+    let target: Value = if ref_str == "#" {
+        ctx.root.clone()
+    } else {
+        let pointer = ref_str.strip_prefix('#').unwrap_or(ref_str);
+        ctx.root
+            .pointer(pointer)
+            .ok_or_else(|| CompileError::UnresolvedRef {
+                uri: ref_str.to_owned(),
+                reason: format!("JSON pointer `{pointer}` not found in document"),
+            })?
+            .clone()
+    };
+    ctx.visiting.push(ref_str.to_owned());
+    let result = lower_schema(&target, ctx);
+    ctx.visiting.pop();
+    result
+}
+
 fn lower_object_schema(
     obj: &serde_json::Map<String, Value>,
-    base_uri: &str,
-    resolver: &dyn Resolver,
+    ctx: &mut LowerCtx<'_>,
 ) -> Result<SchemaNode, CompileError> {
+    // A `$ref` short-circuits all sibling keywords (pre-2019-09 behaviour).
+    // We lower the referenced schema directly; sibling keywords are ignored
+    // because the overwhelming majority of real-world schemas follow this
+    // convention and mixing $ref with siblings requires full merging logic.
+    if let Some(Value::String(ref_str)) = obj.get("$ref") {
+        if ref_str.starts_with('#') {
+            return lower_local_ref(ref_str, ctx);
+        }
+        // External URI – not yet supported.
+        return Err(CompileError::UnresolvedRef {
+            uri: ref_str.clone(),
+            reason: "external $ref URIs are not yet resolved; only local fragment refs (#/…) are supported".to_owned(),
+        });
+    }
     let mut node = SchemaNode::default();
     extract_types(obj, &mut node);
     extract_metadata(obj, &mut node);
@@ -179,10 +247,10 @@ fn lower_object_schema(
     extract_numeric_constraints(obj, &mut node);
     extract_array_constraints(obj, &mut node);
     extract_object_constraints(obj, &mut node);
-    lower_properties(obj, base_uri, resolver, &mut node)?;
-    lower_combinators(obj, base_uri, resolver, &mut node)?;
-    lower_items(obj, base_uri, resolver, &mut node)?;
-    lower_defs(obj, base_uri, resolver, &mut node)?;
+    lower_properties(obj, ctx, &mut node)?;
+    lower_combinators(obj, ctx, &mut node)?;
+    lower_items(obj, ctx, &mut node)?;
+    lower_defs(obj, ctx, &mut node)?;
     Ok(node)
 }
 
@@ -287,34 +355,32 @@ fn extract_object_constraints(obj: &serde_json::Map<String, Value>, node: &mut S
 
 fn lower_properties(
     obj: &serde_json::Map<String, Value>,
-    base_uri: &str,
-    resolver: &dyn Resolver,
+    ctx: &mut LowerCtx<'_>,
     node: &mut SchemaNode,
 ) -> Result<(), CompileError> {
     if let Some(Value::Object(props)) = obj.get("properties") {
         let mut map = IndexMap::new();
         for (k, v) in props {
-            map.insert(k.clone(), lower_schema(v, base_uri, resolver)?);
+            map.insert(k.clone(), lower_schema(v, ctx)?);
         }
         node.properties = map;
     }
     if let Some(ap) = obj.get("additionalProperties") {
-        node.additional_properties = Some(Box::new(lower_schema(ap, base_uri, resolver)?));
+        node.additional_properties = Some(Box::new(lower_schema(ap, ctx)?));
     }
     Ok(())
 }
 
 fn lower_combinators(
     obj: &serde_json::Map<String, Value>,
-    base_uri: &str,
-    resolver: &dyn Resolver,
+    ctx: &mut LowerCtx<'_>,
     node: &mut SchemaNode,
 ) -> Result<(), CompileError> {
-    lower_schema_array(obj, "allOf", base_uri, resolver, &mut node.all_of)?;
-    lower_schema_array(obj, "anyOf", base_uri, resolver, &mut node.any_of)?;
-    lower_schema_array(obj, "oneOf", base_uri, resolver, &mut node.one_of)?;
+    lower_schema_array(obj, "allOf", ctx, &mut node.all_of)?;
+    lower_schema_array(obj, "anyOf", ctx, &mut node.any_of)?;
+    lower_schema_array(obj, "oneOf", ctx, &mut node.one_of)?;
     if let Some(not_val) = obj.get("not") {
-        node.not = Some(Box::new(lower_schema(not_val, base_uri, resolver)?));
+        node.not = Some(Box::new(lower_schema(not_val, ctx)?));
     }
     Ok(())
 }
@@ -322,31 +388,29 @@ fn lower_combinators(
 fn lower_schema_array(
     obj: &serde_json::Map<String, Value>,
     key: &str,
-    base_uri: &str,
-    resolver: &dyn Resolver,
+    ctx: &mut LowerCtx<'_>,
     target: &mut Vec<SchemaNode>,
 ) -> Result<(), CompileError> {
     let Some(Value::Array(arr)) = obj.get(key) else {
         return Ok(());
     };
     for v in arr {
-        target.push(lower_schema(v, base_uri, resolver)?);
+        target.push(lower_schema(v, ctx)?);
     }
     Ok(())
 }
 
 fn lower_items(
     obj: &serde_json::Map<String, Value>,
-    base_uri: &str,
-    resolver: &dyn Resolver,
+    ctx: &mut LowerCtx<'_>,
     node: &mut SchemaNode,
 ) -> Result<(), CompileError> {
     if let Some(items_val) = obj.get("items") {
-        node.items = Some(Box::new(lower_schema(items_val, base_uri, resolver)?));
+        node.items = Some(Box::new(lower_schema(items_val, ctx)?));
     }
     if let Some(Value::Array(prefix)) = obj.get("prefixItems") {
         for v in prefix {
-            node.prefix_items.push(lower_schema(v, base_uri, resolver)?);
+            node.prefix_items.push(lower_schema(v, ctx)?);
         }
     }
     Ok(())
@@ -354,8 +418,7 @@ fn lower_items(
 
 fn lower_defs(
     obj: &serde_json::Map<String, Value>,
-    base_uri: &str,
-    resolver: &dyn Resolver,
+    ctx: &mut LowerCtx<'_>,
     node: &mut SchemaNode,
 ) -> Result<(), CompileError> {
     let defs_key = if obj.contains_key("$defs") {
@@ -367,8 +430,7 @@ fn lower_defs(
         return Ok(());
     };
     for (k, v) in defs {
-        node.defs
-            .insert(k.clone(), lower_schema(v, base_uri, resolver)?);
+        node.defs.insert(k.clone(), lower_schema(v, ctx)?);
     }
     Ok(())
 }
@@ -450,5 +512,35 @@ mod tests {
         let ir = c.compile_json("test://digest.json", "{}").unwrap();
         assert!(ir.source_digest.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(ir.source_digest.len(), 64);
+    }
+
+    #[test]
+    fn compile_local_ref_to_defs() {
+        let mut c = Compiler::new();
+        let src = r##"{
+            "type": "object",
+            "properties": {
+                "name": {"$ref": "#/$defs/StringField"}
+            },
+            "$defs": {
+                "StringField": {"type": "string", "minLength": 1}
+            }
+        }"##;
+        let ir = c.compile_json("test://ref.json", src).unwrap();
+        let name_prop = ir.root.properties.get("name").expect("property exists");
+        assert!(name_prop.types.string, "ref lowered to string type");
+        assert_eq!(name_prop.string.min_length, Some(1));
+    }
+
+    #[test]
+    fn compile_root_ref() {
+        let mut c = Compiler::new();
+        // Schema that references its own root (infinite in theory, but we
+        // lower lazily and detect cycles).
+        let src = r##"{"$defs": {"Self": {"$ref": "#"}}}"##;
+        let ir = c.compile_json("test://root-ref.json", src).unwrap();
+        // The $defs/Self ref points back to the root; cycle detection produces
+        // an open (any) schema for the recursive position.
+        assert!(ir.root.defs.contains_key("Self"));
     }
 }

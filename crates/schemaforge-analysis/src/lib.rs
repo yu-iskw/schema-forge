@@ -10,6 +10,8 @@
 //! - [`classify`] — classify how well a node maps to a static Rust type.
 //! - [`explain_schema`] — combined classification + dispatch + cost report.
 //! - [`estimated_generated_bytes`] — quick byte-cost estimate.
+//! - [`find_breaking_changes`] — compare two schema nodes and report
+//!   human-readable breaking-change descriptions.
 
 pub mod classify;
 pub mod cost;
@@ -256,6 +258,57 @@ fn analyse_items(
     Ok(Some(Box::new(analyse_at(items, &items_path)?)))
 }
 
+// ── Breaking-change detection ─────────────────────────────────────────────────
+
+/// Compare two schema nodes and return a list of human-readable breaking
+/// change descriptions.
+///
+/// A change is considered *breaking* when it restricts what values were
+/// previously accepted: removing a type, adding a required property, or
+/// narrowing an `enum` set.
+#[must_use]
+pub fn find_breaking_changes(a: &SchemaNode, b: &SchemaNode) -> Vec<String> {
+    let mut changes = Vec::new();
+    check_type_removals(a, b, &mut changes);
+    check_required_additions(a, b, &mut changes);
+    check_enum_restrictions(a, b, &mut changes);
+    changes
+}
+
+fn check_type_removals(a: &SchemaNode, b: &SchemaNode, changes: &mut Vec<String>) {
+    for (flag_a, flag_b, name) in [
+        (a.types.null, b.types.null, "null"),
+        (a.types.string, b.types.string, "string"),
+        (a.types.number, b.types.number, "number"),
+        (a.types.boolean, b.types.boolean, "boolean"),
+        (a.types.array, b.types.array, "array"),
+        (a.types.object, b.types.object, "object"),
+    ] {
+        if flag_a && !flag_b {
+            changes.push(format!("removed {name} type"));
+        }
+    }
+}
+
+fn check_required_additions(a: &SchemaNode, b: &SchemaNode, changes: &mut Vec<String>) {
+    for req in &b.object.required {
+        if !a.object.required.contains(req) {
+            changes.push(format!("added required property `{req}`"));
+        }
+    }
+}
+
+fn check_enum_restrictions(a: &SchemaNode, b: &SchemaNode, changes: &mut Vec<String>) {
+    if b.enum_values.is_empty() || a.enum_values.is_empty() {
+        return;
+    }
+    for val in &a.enum_values {
+        if !b.enum_values.contains(val) {
+            changes.push(format!("removed enum value `{val}`"));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,5 +435,48 @@ mod tests {
         let inferred = analyse(&root).unwrap();
         assert!(inferred.types.string);
         assert!(!inferred.types.number);
+    }
+
+    #[test]
+    fn breaking_changes_type_removal() {
+        let a = SchemaNode {
+            types: TypeSet::from_json(&json!(["string", "null"])),
+            ..SchemaNode::default()
+        };
+        let b = SchemaNode {
+            types: TypeSet::from_json(&json!("string")),
+            ..SchemaNode::default()
+        };
+        let changes = find_breaking_changes(&a, &b);
+        assert!(changes.iter().any(|c| c.contains("null")));
+        assert!(!changes.iter().any(|c| c.contains("string")));
+    }
+
+    #[test]
+    fn breaking_changes_required_addition() {
+        let a = SchemaNode {
+            types: TypeSet::from_json(&json!("object")),
+            ..SchemaNode::default()
+        };
+        let mut b = SchemaNode {
+            types: TypeSet::from_json(&json!("object")),
+            ..SchemaNode::default()
+        };
+        b.object.required.push("email".to_owned());
+        let changes = find_breaking_changes(&a, &b);
+        assert!(changes.iter().any(|c| c.contains("email")));
+    }
+
+    #[test]
+    fn no_breaking_changes_compatible() {
+        let a = SchemaNode {
+            types: TypeSet::from_json(&json!("string")),
+            ..SchemaNode::default()
+        };
+        let b = SchemaNode {
+            types: TypeSet::from_json(&json!("string")),
+            ..SchemaNode::default()
+        };
+        assert!(find_breaking_changes(&a, &b).is_empty());
     }
 }

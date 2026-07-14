@@ -61,8 +61,8 @@ pub enum CliError {
 pub fn from_compile(e: CompileError) -> CliError {
     match e {
         CompileError::JsonParse(s) | CompileError::YamlParse(s) => CliError::Parse(s),
-        CompileError::UnresolvedRef { uri, source } => {
-            CliError::Resolver(format!("unresolved ref `{uri}`: {source}"))
+        CompileError::UnresolvedRef { uri, reason } => {
+            CliError::Resolver(format!("unresolved ref `{uri}`: {reason}"))
         }
         CompileError::UnsupportedDialect(s) => {
             CliError::Unsupported(format!("unsupported dialect: {s}"))

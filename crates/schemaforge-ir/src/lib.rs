@@ -90,39 +90,8 @@ impl TypeSet {
         }
     }
 
-    /// Returns stable JSON type names accepted by this set.
-    ///
-    /// `integer` is omitted when `number` is present because JSON Schema
-    /// defines integers as a subset of numbers.
-    #[must_use]
-    pub fn names(self) -> Vec<&'static str> {
-        let mut names = Vec::new();
-        if self.null {
-            names.push("null");
-        }
-        if self.boolean {
-            names.push("boolean");
-        }
-        if self.integer && !self.number {
-            names.push("integer");
-        }
-        if self.number {
-            names.push("number");
-        }
-        if self.string {
-            names.push("string");
-        }
-        if self.array {
-            names.push("array");
-        }
-        if self.object {
-            names.push("object");
-        }
-        names
-    }
-
     /// Return the JSON Schema type names present in this set, in a stable
-    /// order (object, array, string, number, boolean, null).
+    /// order: object, array, string, number, boolean, null.
     ///
     /// `integer` is intentionally omitted because it is a subset of `number`
     /// and code generators treat them together.
@@ -325,7 +294,7 @@ impl SchemaNode {
                 required: self.object.required.contains(name),
                 types: schema
                     .types
-                    .names()
+                    .type_names()
                     .into_iter()
                     .map(str::to_owned)
                     .collect(),
@@ -429,7 +398,7 @@ mod tests {
         let ts = TypeSet::from_json(&json!("number"));
         assert!(ts.number);
         assert!(ts.integer);
-        assert_eq!(ts.names(), vec!["number"]);
+        assert_eq!(ts.type_names(), vec!["number"]);
     }
 
     #[test]

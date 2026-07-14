@@ -43,6 +43,24 @@ impl RuntimePlan {
     pub fn keywords_in_phase(self, phase: Phase) -> impl Iterator<Item = &'static KeywordEntry> {
         self.keywords.iter().filter(move |k| k.phase == phase)
     }
+
+    /// Return the names of all keywords that belong to `phase`, in order.
+    #[must_use]
+    pub fn keyword_names_in_phase(self, phase: Phase) -> Vec<&'static str> {
+        self.keywords_in_phase(phase).map(|k| k.name).collect()
+    }
+
+    /// Return whether a keyword is registered as an applicator.
+    #[must_use]
+    pub fn is_applicator(self, name: &str) -> bool {
+        self.keywords.iter().any(|k| k.name == name && k.applicator)
+    }
+
+    /// Return whether a keyword is registered at all.
+    #[must_use]
+    pub fn contains_keyword(self, name: &str) -> bool {
+        self.keywords.iter().any(|k| k.name == name)
+    }
 }
 
 /// Canonical runtime plan for JSON Schema Draft 2020-12.
@@ -342,44 +360,6 @@ pub const RUNTIME_PLAN: RuntimePlan = RuntimePlan {
     ],
 };
 
-/// A minimal structural validator driven by the `RuntimePlan`.
-///
-/// This executor verifies that the plan's ordering matches the semantics
-/// expected by the JSON Schema validator.
-#[derive(Debug, Clone, Copy)]
-pub struct PlanExecutor {
-    plan: RuntimePlan,
-}
-
-impl PlanExecutor {
-    /// Create an executor backed by a given plan.
-    #[must_use]
-    pub const fn new(plan: RuntimePlan) -> Self {
-        Self { plan }
-    }
-
-    /// Return the names of all keywords that belong to `phase`, in order.
-    #[must_use]
-    pub fn keyword_names_in_phase(&self, phase: Phase) -> Vec<&'static str> {
-        self.plan.keywords_in_phase(phase).map(|k| k.name).collect()
-    }
-
-    /// Return whether a keyword is registered as an applicator.
-    #[must_use]
-    pub fn is_applicator(&self, name: &str) -> bool {
-        self.plan
-            .keywords
-            .iter()
-            .any(|k| k.name == name && k.applicator)
-    }
-
-    /// Return whether a keyword is registered at all.
-    #[must_use]
-    pub fn contains_keyword(&self, name: &str) -> bool {
-        self.plan.keywords.iter().any(|k| k.name == name)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -419,10 +399,9 @@ mod tests {
     }
 
     #[test]
-    fn executor_core_keywords_before_applicators() {
-        let exec = PlanExecutor::new(RUNTIME_PLAN);
-        let core = exec.keyword_names_in_phase(Phase::Core);
-        let applicators = exec.keyword_names_in_phase(Phase::Applicator);
+    fn core_keywords_before_applicators() {
+        let core = RUNTIME_PLAN.keyword_names_in_phase(Phase::Core);
+        let applicators = RUNTIME_PLAN.keyword_names_in_phase(Phase::Applicator);
         let first_app = RUNTIME_PLAN
             .keywords
             .iter()
@@ -439,10 +418,9 @@ mod tests {
     }
 
     #[test]
-    fn executor_unevaluated_after_validation() {
-        let exec = PlanExecutor::new(RUNTIME_PLAN);
-        let val_names = exec.keyword_names_in_phase(Phase::Validation);
-        let uneval_names = exec.keyword_names_in_phase(Phase::Unevaluated);
+    fn unevaluated_after_validation() {
+        let val_names = RUNTIME_PLAN.keyword_names_in_phase(Phase::Validation);
+        let uneval_names = RUNTIME_PLAN.keyword_names_in_phase(Phase::Unevaluated);
         let last_val = RUNTIME_PLAN
             .keywords
             .iter()
@@ -459,25 +437,22 @@ mod tests {
     }
 
     #[test]
-    fn executor_properties_are_applicators() {
-        let exec = PlanExecutor::new(RUNTIME_PLAN);
-        assert!(exec.is_applicator("properties"));
-        assert!(exec.is_applicator("additionalProperties"));
-        assert!(exec.is_applicator("allOf"));
-        assert!(exec.is_applicator("$ref"));
+    fn properties_are_applicators() {
+        assert!(RUNTIME_PLAN.is_applicator("properties"));
+        assert!(RUNTIME_PLAN.is_applicator("additionalProperties"));
+        assert!(RUNTIME_PLAN.is_applicator("allOf"));
+        assert!(RUNTIME_PLAN.is_applicator("$ref"));
     }
 
     #[test]
-    fn executor_validation_keywords_not_applicators() {
-        let exec = PlanExecutor::new(RUNTIME_PLAN);
-        assert!(!exec.is_applicator("type"));
-        assert!(!exec.is_applicator("minimum"));
-        assert!(!exec.is_applicator("required"));
+    fn validation_keywords_not_applicators() {
+        assert!(!RUNTIME_PLAN.is_applicator("type"));
+        assert!(!RUNTIME_PLAN.is_applicator("minimum"));
+        assert!(!RUNTIME_PLAN.is_applicator("required"));
     }
 
     #[test]
-    fn executor_all_draft2020_keywords_registered() {
-        let exec = PlanExecutor::new(RUNTIME_PLAN);
+    fn all_draft2020_keywords_registered() {
         let required = [
             "$schema",
             "$ref",
@@ -508,7 +483,7 @@ mod tests {
             "format",
         ];
         for kw in required {
-            assert!(exec.contains_keyword(kw), "missing keyword: {kw}");
+            assert!(RUNTIME_PLAN.contains_keyword(kw), "missing keyword: {kw}");
         }
     }
 

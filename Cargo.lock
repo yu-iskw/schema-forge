@@ -669,9 +669,9 @@ name = "schemaforge-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "schemaforge-analysis",
  "schemaforge-codegen-rust",
  "schemaforge-compiler",
- "schemaforge-diagnostics",
  "schemaforge-ir",
  "schemaforge-jsonschema",
  "schemaforge-openapi",
@@ -697,7 +697,6 @@ version = "0.1.0"
 dependencies = [
  "indexmap",
  "schemaforge-analysis",
- "schemaforge-diagnostics",
  "schemaforge-dialect",
  "schemaforge-ir",
  "schemaforge-jsonschema",
@@ -780,7 +779,6 @@ version = "0.1.0"
 dependencies = [
  "indexmap",
  "schemaforge-compiler",
- "schemaforge-diagnostics",
  "schemaforge-jsonschema",
  "schemaforge-source",
  "serde",

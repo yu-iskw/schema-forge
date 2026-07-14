@@ -12,7 +12,6 @@ description = "OpenAPI 3.x document parsing and JSON Schema extraction for Schem
 
 [dependencies]
 schemaforge-source.workspace = true
-schemaforge-diagnostics.workspace = true
 schemaforge-jsonschema.workspace = true
 schemaforge-compiler.workspace = true
 serde.workspace = true

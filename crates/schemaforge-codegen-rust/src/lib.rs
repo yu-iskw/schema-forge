@@ -64,13 +64,18 @@ pub struct CodegenOptions {
     pub max_bytes: Option<usize>,
 }
 
+/// Default output size cap: 5 MiB.  Schemas that produce more generated code
+/// than this are almost certainly pathological; callers may override via
+/// [`CodegenOptions::max_bytes`].
+pub const DEFAULT_MAX_BYTES: usize = 5_000_000;
+
 impl Default for CodegenOptions {
     fn default() -> Self {
         Self {
             extra_derives: Vec::new(),
             wrap_optional: true,
             module_doc: None,
-            max_bytes: None,
+            max_bytes: Some(DEFAULT_MAX_BYTES),
         }
     }
 }

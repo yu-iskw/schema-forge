@@ -237,6 +237,7 @@ fn cmd_generate(args: &GenerateArgs, _fmt: &DiagFormat) -> Result<(), CliError> 
     let ir = load_schema(&args.schema)?;
     let opts = schemaforge_codegen_rust::CodegenOptions {
         module_doc: Some(format!("Generated from {}", args.schema.display())),
+        max_bytes: Some(schemaforge_codegen_rust::DEFAULT_MAX_BYTES),
         ..schemaforge_codegen_rust::CodegenOptions::default()
     };
     let code = schemaforge_codegen_rust::generate(&ir, &opts)?;
@@ -347,79 +348,8 @@ fn print_explain_human(r: &schemaforge_compiler::ExplainResult) {
 fn cmd_compat(args: &CompatArgs, fmt: &DiagFormat) -> Result<(), CliError> {
     let ir_a = load_schema(&args.schema_a)?;
     let ir_b = load_schema(&args.schema_b)?;
-    let breaks = find_breaking_changes(&ir_a.root, &ir_b.root);
+    let breaks = schemaforge_analysis::find_breaking_changes(&ir_a.root, &ir_b.root);
     report_breaking_changes(&breaks, fmt)
-}
-
-fn find_breaking_changes(
-    a: &schemaforge_ir::SchemaNode,
-    b: &schemaforge_ir::SchemaNode,
-) -> Vec<String> {
-    let mut changes = Vec::new();
-    check_scalar_type_removals(a, b, &mut changes);
-    check_compound_type_removals(a, b, &mut changes);
-    check_required_additions(a, b, &mut changes);
-    check_enum_restrictions(a, b, &mut changes);
-    changes
-}
-
-fn check_scalar_type_removals(
-    a: &schemaforge_ir::SchemaNode,
-    b: &schemaforge_ir::SchemaNode,
-    changes: &mut Vec<String>,
-) {
-    if a.types.null && !b.types.null {
-        changes.push("removed null type".to_owned());
-    }
-    if a.types.string && !b.types.string {
-        changes.push("removed string type".to_owned());
-    }
-    if a.types.number && !b.types.number {
-        changes.push("removed number type".to_owned());
-    }
-}
-
-fn check_compound_type_removals(
-    a: &schemaforge_ir::SchemaNode,
-    b: &schemaforge_ir::SchemaNode,
-    changes: &mut Vec<String>,
-) {
-    if a.types.boolean && !b.types.boolean {
-        changes.push("removed boolean type".to_owned());
-    }
-    if a.types.array && !b.types.array {
-        changes.push("removed array type".to_owned());
-    }
-    if a.types.object && !b.types.object {
-        changes.push("removed object type".to_owned());
-    }
-}
-
-fn check_required_additions(
-    a: &schemaforge_ir::SchemaNode,
-    b: &schemaforge_ir::SchemaNode,
-    changes: &mut Vec<String>,
-) {
-    for req in &b.object.required {
-        if !a.object.required.contains(req) {
-            changes.push(format!("added required property `{req}`"));
-        }
-    }
-}
-
-fn check_enum_restrictions(
-    a: &schemaforge_ir::SchemaNode,
-    b: &schemaforge_ir::SchemaNode,
-    changes: &mut Vec<String>,
-) {
-    if b.enum_values.is_empty() || a.enum_values.is_empty() {
-        return;
-    }
-    for val in &a.enum_values {
-        if !b.enum_values.contains(val) {
-            changes.push(format!("removed enum value `{val}`"));
-        }
-    }
 }
 
 fn report_breaking_changes(breaks: &[String], fmt: &DiagFormat) -> Result<(), CliError> {

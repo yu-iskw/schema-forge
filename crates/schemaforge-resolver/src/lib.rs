@@ -76,6 +76,12 @@ pub enum ResolveError {
         /// Configured limit.
         limit: usize,
     },
+    /// The resolved path escapes the configured base-directory jail.
+    #[error("path `{path}` escapes the resolver base-directory jail")]
+    PathEscaped {
+        /// The escaped (normalized) path that was rejected.
+        path: String,
+    },
 }
 
 // ── Resolver trait ────────────────────────────────────────────────────────────
@@ -234,8 +240,11 @@ impl<R: Resolver> LimitingResolver<R> {
 impl<R: Resolver + Send + Sync> Resolver for LimitingResolver<R> {
     fn resolve(&self, base: &str, reference: &str) -> Result<Value, ResolveError> {
         let value = self.inner.resolve(base, reference)?;
-        let serialised = serde_json::to_string(&value).unwrap_or_default();
-        let size = serialised.len();
+        // Walk the value tree to estimate serialised byte size without a full
+        // allocation.  The estimate is tight for typical schemas; worst-case it
+        // may under-count by a small constant per string (chars that need
+        // multi-byte JSON escaping), which is acceptable for a size guard.
+        let size = json_byte_size(&value);
         if size > self.max_bytes {
             return Err(ResolveError::SizeExceeded {
                 uri: reference.to_owned(),
@@ -261,6 +270,49 @@ fn json_depth(v: &Value) -> usize {
         Value::Array(arr) => arr.iter().map(json_depth).max().unwrap_or(0) + 1,
         Value::Object(obj) => obj.values().map(json_depth).max().unwrap_or(0) + 1,
         _ => 1,
+    }
+}
+
+/// Estimate the serialised byte size of a JSON value without allocating a
+/// string.  The estimate matches compact (no-whitespace) JSON.  It may
+/// under-count by a small constant per string that contains characters
+/// needing multi-byte `\uXXXX` escapes, which is acceptable for a size guard.
+fn json_byte_size(v: &Value) -> usize {
+    match v {
+        Value::Null | Value::Bool(true) => 4,
+        Value::Bool(false) => 5,
+        Value::Number(n) => n.to_string().len(),
+        Value::String(s) => {
+            // 2 delimiter quotes + content length + one extra byte per char
+            // that needs a single-char escape (", \, control chars).
+            let escapes = s
+                .bytes()
+                .filter(|b| matches!(b, b'"' | b'\\' | 0x00..=0x1f))
+                .count();
+            2 + s.len() + escapes
+        }
+        Value::Array(arr) => {
+            // "[" + items + "," separators + "]"
+            let inner: usize = arr.iter().map(json_byte_size).sum();
+            let commas = arr.len().saturating_sub(1);
+            2 + inner + commas
+        }
+        Value::Object(obj) => {
+            // "{" + key:"value" pairs + "," separators + "}"
+            let inner: usize = obj
+                .iter()
+                .map(|(k, val)| {
+                    let key_escapes = k
+                        .bytes()
+                        .filter(|b| matches!(b, b'"' | b'\\' | 0x00..=0x1f))
+                        .count();
+                    let key_bytes = 2 + k.len() + key_escapes; // "key"
+                    key_bytes + 1 + json_byte_size(val) // :"value"
+                })
+                .sum();
+            let commas = obj.len().saturating_sub(1);
+            2 + inner + commas
+        }
     }
 }
 
@@ -348,7 +400,7 @@ impl LockFile {
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 fn load_from_path(uri: &str, base_dir: Option<&Path>) -> Result<Value, ResolveError> {
-    let path = uri_to_path(uri, base_dir).ok_or_else(|| ResolveError::NotFound(uri.to_owned()))?;
+    let path = uri_to_jailed_path(uri, base_dir)?;
     let text = std::fs::read_to_string(&path).map_err(|e| ResolveError::IoError {
         uri: uri.to_owned(),
         reason: e.to_string(),
@@ -359,13 +411,66 @@ fn load_from_path(uri: &str, base_dir: Option<&Path>) -> Result<Value, ResolveEr
     })
 }
 
-fn uri_to_path(uri: &str, base_dir: Option<&Path>) -> Option<std::path::PathBuf> {
-    if let Some(file_path) = uri.strip_prefix("file://") {
-        return Some(std::path::PathBuf::from(file_path));
+/// Resolve a URI to a filesystem path, enforcing a base-directory jail.
+///
+/// Rules:
+/// - `file://` URIs are accepted only when the resolved path stays inside
+///   `base_dir` (when `base_dir` is `Some`).  With no `base_dir` the path is
+///   returned as-is.
+/// - Relative URIs are joined with `base_dir`; if `base_dir` is `None` the
+///   URI cannot be resolved and [`ResolveError::NotFound`] is returned.
+/// - After joining, the path is lexically normalised (`.` and `..` are
+///   collapsed) and the result must have `base_dir` as a prefix.  Any path
+///   that escapes the jail is rejected with [`ResolveError::PathEscaped`].
+fn uri_to_jailed_path(
+    uri: &str,
+    base_dir: Option<&Path>,
+) -> Result<std::path::PathBuf, ResolveError> {
+    let raw_path: std::path::PathBuf = if let Some(file_path) = uri.strip_prefix("file://") {
+        std::path::PathBuf::from(file_path)
+    } else {
+        let base = base_dir.ok_or_else(|| ResolveError::NotFound(uri.to_owned()))?;
+        let relative = uri.trim_start_matches('/');
+        base.join(relative)
+    };
+
+    let normalized = lexically_normalize(&raw_path);
+
+    // Enforce jail when a base directory is configured.
+    if let Some(base) = base_dir {
+        let normalized_base = lexically_normalize(base);
+        if !normalized.starts_with(&normalized_base) {
+            return Err(ResolveError::PathEscaped {
+                path: normalized.display().to_string(),
+            });
+        }
     }
-    let base = base_dir?;
-    let relative = uri.trim_start_matches('/');
-    Some(base.join(relative))
+
+    Ok(normalized)
+}
+
+/// Lexically normalize a path by collapsing `.` and `..` components without
+/// touching the filesystem (no symlink resolution).
+fn lexically_normalize(path: &Path) -> std::path::PathBuf {
+    let mut parts: Vec<std::path::Component<'_>> = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // Only pop a normal component; a leading `..` above the root
+                // or a prefix cannot be popped, so leave it in place (the
+                // subsequent starts_with check will catch the escape).
+                match parts.last() {
+                    Some(std::path::Component::Normal(_)) => {
+                        parts.pop();
+                    }
+                    _ => parts.push(component),
+                }
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.iter().collect()
 }
 
 /// Normalize a URI for use as a registry key (strip trailing `#`).
@@ -606,6 +711,119 @@ mod tests {
     fn lockfile_from_toml_invalid_returns_error() {
         let result = LockFile::from_toml("this is not toml!!! [[[");
         assert!(result.is_err());
+    }
+
+    // ── FileResolver path-jail tests ──────────────────────────────────────────
+
+    /// Helper: create a temp jail dir and write a minimal schema inside it.
+    fn make_jail() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("schemaforge_jail_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("schema.json"), r#"{"type":"string"}"#).unwrap();
+        dir
+    }
+
+    #[test]
+    fn file_resolver_allows_file_uri_inside_jail() {
+        let jail = make_jail();
+        let r = FileResolver::with_base_dir(&jail);
+        let schema_uri = format!("file://{}/schema.json", jail.display());
+        let result = r.resolve("", &schema_uri);
+        assert!(
+            !matches!(result, Err(ResolveError::PathEscaped { .. })),
+            "expected Ok or non-jail error, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn file_resolver_rejects_dotdot_in_file_uri() {
+        let jail = make_jail();
+        let r = FileResolver::with_base_dir(&jail);
+        // file:// URI that uses .. to escape the jail
+        let escaped = format!("file://{}/../../../etc/passwd", jail.display());
+        let err = r.resolve("", &escaped).unwrap_err();
+        assert!(
+            matches!(err, ResolveError::PathEscaped { .. }),
+            "expected PathEscaped, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn file_resolver_rejects_absolute_path_outside_jail() {
+        let jail = make_jail();
+        let r = FileResolver::with_base_dir(&jail);
+        // Absolute file:// URI pointing outside the jail
+        let err = r.resolve("", "file:///etc/passwd").unwrap_err();
+        assert!(
+            matches!(err, ResolveError::PathEscaped { .. }),
+            "expected PathEscaped, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn file_resolver_rejects_relative_dotdot_escape() {
+        let jail = make_jail();
+        let r = FileResolver::with_base_dir(&jail);
+        // A relative URI containing ../ that would escape the jail when joined
+        let err = r.resolve("", "../../etc/passwd").unwrap_err();
+        assert!(
+            matches!(err, ResolveError::PathEscaped { .. }),
+            "expected PathEscaped, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn file_resolver_rejects_dotdot_in_resolved_ref() {
+        let jail = make_jail();
+        let r = FileResolver::with_base_dir(&jail);
+        // Simulate a $ref that resolves to a path escaping the jail
+        let base = format!("file://{}/schema.json", jail.display());
+        let err = r.resolve(&base, "../../../etc/passwd").unwrap_err();
+        assert!(
+            matches!(err, ResolveError::PathEscaped { .. }),
+            "expected PathEscaped, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn lexically_normalize_collapses_dotdot() {
+        use std::path::PathBuf;
+        let p = PathBuf::from("/tmp/jail/sub/../../../etc/passwd");
+        let normalized = lexically_normalize(&p);
+        assert_eq!(normalized, PathBuf::from("/etc/passwd"));
+    }
+
+    #[test]
+    fn lexically_normalize_keeps_valid_path() {
+        use std::path::PathBuf;
+        let p = PathBuf::from("/tmp/jail/sub/schema.json");
+        let normalized = lexically_normalize(&p);
+        assert_eq!(normalized, p);
+    }
+
+    // ── json_byte_size helper tests ───────────────────────────────────────────
+
+    #[test]
+    fn json_byte_size_primitives() {
+        assert_eq!(json_byte_size(&json!(null)), 4);
+        assert_eq!(json_byte_size(&json!(true)), 4);
+        assert_eq!(json_byte_size(&json!(false)), 5);
+        assert_eq!(json_byte_size(&json!("hi")), 4); // "hi"
+    }
+
+    #[test]
+    fn json_byte_size_is_close_to_serialised_len() {
+        // For schemas without exotic escapes the estimate should match compact
+        // JSON serialisation exactly or be within a small margin.
+        let schema = json!({"type": "string", "minLength": 1, "maxLength": 100});
+        let serialised = serde_json::to_string(&schema).unwrap();
+        let estimated = json_byte_size(&schema);
+        // Allow ±10 bytes for any edge-case differences.
+        assert!(
+            estimated.abs_diff(serialised.len()) <= 10,
+            "estimate {estimated} too far from actual {actual}",
+            actual = serialised.len()
+        );
     }
 
     // ── json_depth helper tests ───────────────────────────────────────────────

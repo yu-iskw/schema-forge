@@ -12,7 +12,6 @@ description = "Core compilation pipeline: JSON Schema source → IR."
 
 [dependencies]
 schemaforge-source.workspace = true
-schemaforge-diagnostics.workspace = true
 schemaforge-dialect.workspace = true
 schemaforge-resolver.workspace = true
 schemaforge-ir.workspace = true
