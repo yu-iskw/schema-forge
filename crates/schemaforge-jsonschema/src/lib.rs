@@ -164,10 +164,17 @@ impl Validator {
         anchors_by_doc.insert(String::new(), root_anchors);
         let mut patterns = HashMap::new();
         collect_patterns_recursive(schema, &mut patterns)?;
+        // Insert the root schema under `base_uri` so that absolute self-refs
+        // such as `"$ref": "https://example.com/schema.json#anchor"` resolve
+        // against the root document rather than failing with "not found".
+        let mut registry = HashMap::new();
+        if !options.base_uri.is_empty() {
+            registry.insert(options.base_uri.clone(), schema.clone());
+        }
         Ok(Self {
             schema: schema.clone(),
             options,
-            registry: HashMap::new(),
+            registry,
             formats,
             anchors_by_doc,
             patterns,

@@ -95,11 +95,18 @@ fn split_uri_fragment(uri: &str) -> (&str, &str) {
 }
 
 fn build_registry_key(ref_uri: &str, base_uri: &str) -> String {
-    if ref_uri.starts_with("http://") || ref_uri.starts_with("https://") {
+    if is_absolute_uri(ref_uri) {
         ref_uri.to_owned()
     } else {
         format!("{base_uri}{ref_uri}")
     }
+}
+
+/// Return `true` when `uri` is self-contained and must not be resolved
+/// relative to any base.  Covers `scheme://…` URIs (http, https, file, …)
+/// and `urn:` URNs.
+fn is_absolute_uri(uri: &str) -> bool {
+    uri.contains("://") || uri.starts_with("urn:")
 }
 
 // ── JSON Pointer resolution ───────────────────────────────────────────────────
@@ -115,6 +122,7 @@ fn resolve_json_pointer<'a>(root: &'a Value, pointer: &str) -> Option<&'a Value>
 mod tests {
     use super::*;
     use crate::{ValidationOptions, Validator};
+    use ValidationOptions as Opts;
     use serde_json::json;
 
     fn valid(schema: &Value, instance: &Value) -> bool {
@@ -290,5 +298,76 @@ mod tests {
     fn pointer_tilde_unescape() {
         let root = json!({"a/b": {"c~d": 1}});
         assert_eq!(resolve_json_pointer(&root, "/a~1b/c~0d"), Some(&json!(1)));
+    }
+
+    // ── base_uri self-ref (fix #2) ─────────────────────────────────────────
+
+    #[test]
+    fn base_uri_anchor_ref_resolves_via_absolute_self_ref() {
+        // When base_uri is set, a $ref to "<base_uri>#anchorName" must resolve
+        // to the anchor defined in the root schema (the self-ref case).
+        let schema = json!({
+            "$defs": {
+                "Str": {"$anchor": "myAnchor", "type": "string"}
+            },
+            "$ref": "https://example.com/root.json#myAnchor"
+        });
+        let opts = Opts {
+            base_uri: "https://example.com/root.json".to_owned(),
+            ..Default::default()
+        };
+        let v = Validator::new(&schema, opts).unwrap();
+        assert!(
+            v.validate(&json!("hello")).is_valid(),
+            "absolute self-ref with anchor must resolve"
+        );
+        assert!(
+            !v.validate(&json!(42)).is_valid(),
+            "anchor schema constraints must apply"
+        );
+    }
+
+    #[test]
+    fn urn_ref_resolves_correctly_when_base_uri_is_http() {
+        // A $ref with a urn: scheme is absolute and must NOT be concatenated
+        // with the base_uri, even when base_uri is an http URL.
+        let root = json!({"$ref": "urn:ext"});
+        let opts = Opts {
+            base_uri: "https://example.com/root.json".to_owned(),
+            ..Default::default()
+        };
+        let mut v = Validator::new(&root, opts).unwrap();
+        let external = json!({"type": "integer"});
+        v.add_schema("urn:ext", external).unwrap();
+        assert!(
+            v.validate(&json!(1)).is_valid(),
+            "urn: ref must resolve to the registered schema"
+        );
+        assert!(
+            !v.validate(&json!("not-int")).is_valid(),
+            "referenced schema constraints must apply"
+        );
+    }
+
+    #[test]
+    fn urn_ref_with_anchor_resolves_correctly_when_base_uri_is_http() {
+        // urn:ext#anchorName must look up the anchor in urn:ext only,
+        // even when the validator has a non-empty http base_uri.
+        let root = json!({"$ref": "urn:ext#remoteAnchor"});
+        let opts = Opts {
+            base_uri: "https://example.com/root.json".to_owned(),
+            ..Default::default()
+        };
+        let mut v = Validator::new(&root, opts).unwrap();
+        let external = json!({"$anchor": "remoteAnchor", "type": "string"});
+        v.add_schema("urn:ext", external).unwrap();
+        assert!(
+            v.validate(&json!("hi")).is_valid(),
+            "urn: anchor ref must resolve correctly"
+        );
+        assert!(
+            !v.validate(&json!(42)).is_valid(),
+            "anchor schema constraints must apply"
+        );
     }
 }
