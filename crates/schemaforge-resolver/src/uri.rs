@@ -37,6 +37,37 @@ fn remove_dot_segments(path: &str) -> String {
     }
 }
 
+/// Lowercase the path component of a `file://` URI.
+///
+/// The scheme (`file://`) and any authority are preserved; only the path
+/// (everything from the first `/` after the authority) is lowercased.
+///
+/// Used by [`normalize_uri`] on `cfg(windows)` to produce case-insensitive
+/// registry keys for the case-insensitive Windows filesystem.
+///
+/// Compiled on `cfg(any(windows, test))` so it can be unit-tested on all
+/// platforms without triggering the dead-code lint on non-Windows production
+/// builds.
+#[cfg(any(windows, test))]
+pub(crate) fn casefold_file_uri_path(uri: String) -> String {
+    if !uri.starts_with("file://") {
+        return uri;
+    }
+    let prefix_len = "file://".len();
+    // The authority is everything between "file://" and the first '/'; the
+    // path is everything from that '/' onward.  Use a temporary borrow so
+    // `uri` is not kept borrowed past the `find` call.
+    let Some(rel_slash) = uri[prefix_len..].find('/') else {
+        return uri;
+    };
+    let authority_end = prefix_len + rel_slash;
+    format!(
+        "file://{}{}",
+        &uri[prefix_len..authority_end],
+        uri[authority_end..].to_lowercase()
+    )
+}
+
 /// Normalize the path component of a `scheme://authority/path` URI by applying
 /// RFC 3986 remove-dot-segments.  The scheme, authority, query, and fragment
 /// are left unchanged.  URIs without `://` (e.g. URNs) are returned as-is.
@@ -72,9 +103,16 @@ pub(crate) fn normalize_path_in_uri(uri: &str) -> String {
 /// - Strips a trailing bare `#`.
 /// - Applies RFC 3986 remove-dot-segments to the path component so that
 ///   `file:///a/./b.json` and `file:///a/b.json` map to the same key.
-pub(crate) fn normalize_uri(mut uri: String) -> String {
+/// - On Windows, lowercases the path component of `file://` URIs so that
+///   the case-insensitive filesystem is reflected in the registry key.
+#[must_use]
+pub fn normalize_uri(mut uri: String) -> String {
     if uri.ends_with('#') {
         uri.pop();
+    }
+    #[cfg(windows)]
+    {
+        uri = casefold_file_uri_path(uri);
     }
     normalize_path_in_uri(&uri)
 }
@@ -287,5 +325,42 @@ mod tests {
             normalize_path_in_uri("file:///tmp/schema.json/#diskOnly"),
             "file:///tmp/schema.json#diskOnly"
         );
+    }
+
+    // ── casefold_file_uri_path ────────────────────────────────────────────────
+
+    #[test]
+    fn casefold_file_uri_path_lowercases_path_component() {
+        let input = "file:///C:/Schemas/MySchema.json".to_owned();
+        let result = casefold_file_uri_path(input);
+        assert_eq!(result, "file:///c:/schemas/myschema.json");
+    }
+
+    #[test]
+    fn casefold_file_uri_path_lowercases_path_with_authority() {
+        let input = "file://localhost/C:/SCHEMAS/schema.json".to_owned();
+        let result = casefold_file_uri_path(input);
+        assert_eq!(result, "file://localhost/c:/schemas/schema.json");
+    }
+
+    #[test]
+    fn casefold_file_uri_path_leaves_non_file_uri_unchanged() {
+        let input = "https://EXAMPLE.com/SCHEMAS/Schema.json".to_owned();
+        let result = casefold_file_uri_path(input.clone());
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn casefold_file_uri_path_leaves_urn_unchanged() {
+        let input = "urn:UPPER:case".to_owned();
+        let result = casefold_file_uri_path(input.clone());
+        assert_eq!(result, input);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalize_uri_casefoldsfile_uri_on_windows() {
+        let result = normalize_uri("file:///C:/Schemas/MySchema.json".to_owned());
+        assert_eq!(result, "file:///c:/schemas/myschema.json");
     }
 }

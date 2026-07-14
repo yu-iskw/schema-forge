@@ -54,6 +54,20 @@ fn apply_unevaluated_properties(
     // Build once — not per instance key — so large objects don't re-walk
     // allOf/anyOf/oneOf branches on every property.
     let branch_props = applicator_branch_evaluated_properties(obj, instance, ctx);
+    // Fail closed: if the branch walk exceeded the depth limit, the evaluated
+    // set is incomplete.  Silently skipping unevaluated properties would
+    // produce false negatives, so emit a depth error instead.
+    if ctx.branch_depth_exceeded.get() {
+        out.merge(crate::ValidationOutput::fail(crate::ValidationError::new(
+            path,
+            format!("{path}/unevaluatedProperties"),
+            format!(
+                "unevaluatedProperties analysis aborted: \
+                 schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
+            ),
+        )));
+        return;
+    }
     for (key, value) in inst {
         if is_property_evaluated(key, &explicit, obj, has_additional, &branch_props, ctx) {
             continue;
@@ -222,6 +236,9 @@ fn collect_branch_props_depth(
     depth: usize,
 ) {
     if depth > MAX_BRANCH_REF_DEPTH {
+        // Mark the context so callers can fail closed rather than returning
+        // an incomplete evaluated set.
+        ctx.branch_depth_exceeded.set(true);
         return;
     }
     let Value::Object(obj) = branch else {
@@ -289,7 +306,8 @@ fn apply_unevaluated_items(
     };
 
     let (effective_prefix_len, has_items) = items_eval_range(obj, instance, ctx);
-    // `items` evaluates every remaining index, so unevaluatedItems is a no-op.
+    // `items` keyword at a reachable depth evaluates every remaining index, so
+    // unevaluatedItems is a no-op regardless of depth.
     if has_items {
         return;
     }
@@ -297,6 +315,22 @@ fn apply_unevaluated_items(
     // Collect contains schemas once — not per array element — so large arrays
     // don't re-walk allOf/anyOf/$ref for every index.
     let contains_schemas = collect_contains_schemas(obj, instance, ctx);
+
+    // Fail closed: if the branch walk exceeded the depth limit the evaluated
+    // ranges/contains set is incomplete and silently skipping items would
+    // produce false negatives.
+    if ctx.branch_depth_exceeded.get() {
+        out.merge(crate::ValidationOutput::fail(crate::ValidationError::new(
+            path,
+            format!("{path}/unevaluatedItems"),
+            format!(
+                "unevaluatedItems analysis aborted: \
+                 schema branch depth exceeded limit of {MAX_BRANCH_REF_DEPTH}"
+            ),
+        )));
+        return;
+    }
+
     for (i, item) in items.iter().enumerate().skip(effective_prefix_len) {
         // Draft 2020-12 §11.2: items matching `contains` (including those from
         // allOf/anyOf/oneOf/if/then/else/$ref) are evaluated.
@@ -334,6 +368,7 @@ fn collect_contains_schemas_depth<'a>(
     out: &mut Vec<&'a Value>,
 ) {
     if depth > MAX_BRANCH_REF_DEPTH {
+        ctx.branch_depth_exceeded.set(true);
         return;
     }
     if let Some(contains) = obj.get("contains") {
@@ -368,6 +403,7 @@ fn collect_items_eval_depth(
     has_items: &mut bool,
 ) {
     if depth > MAX_BRANCH_REF_DEPTH {
+        ctx.branch_depth_exceeded.set(true);
         return;
     }
     if obj.contains_key("items") {
@@ -1089,6 +1125,63 @@ mod tests {
         assert!(
             !valid(&s, &json!({"billing_address": "123 Main"})),
             "billing_address must be rejected when trigger credit_card is absent"
+        );
+    }
+
+    // ── depth fail-closed ─────────────────────────────────────────────────────
+
+    #[test]
+    fn unevaluated_properties_deep_allof_chain_fails_closed_with_depth_error() {
+        // Build an allOf chain nested beyond MAX_BRANCH_REF_DEPTH (128) levels.
+        // Property "x" at the leaf is too deep for the branch-property pre-pass
+        // to reach; the validator must fail closed with a depth error rather than
+        // silently treating "x" as unevaluated and wrongly rejecting the instance.
+        let leaf = serde_json::json!({"properties": {"x": true}});
+        let mut schema = leaf;
+        // 133 > MAX_BRANCH_REF_DEPTH (128)
+        for _ in 0..133_usize {
+            schema = serde_json::json!({"allOf": [schema]});
+        }
+        let full_schema = serde_json::json!({
+            "allOf": [schema],
+            "unevaluatedProperties": false
+        });
+        let v = Validator::new(&full_schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&serde_json::json!({"x": 1}));
+        assert!(
+            !out.is_valid(),
+            "deep allOf with unevaluatedProperties must fail-closed on depth exceeded"
+        );
+        assert!(
+            out.errors.iter().any(|e| e.message.contains("depth")),
+            "at least one error must mention 'depth', got: {:#?}",
+            out.errors
+        );
+    }
+
+    #[test]
+    fn unevaluated_items_deep_allof_chain_fails_closed_with_depth_error() {
+        // Same depth-exceeded scenario for unevaluatedItems: an allOf chain
+        // deeper than MAX_BRANCH_REF_DEPTH must produce a depth error.
+        let leaf = serde_json::json!({"prefixItems": [{"type": "integer"}]});
+        let mut schema = leaf;
+        for _ in 0..133_usize {
+            schema = serde_json::json!({"allOf": [schema]});
+        }
+        let full_schema = serde_json::json!({
+            "allOf": [schema],
+            "unevaluatedItems": false
+        });
+        let v = Validator::new(&full_schema, ValidationOptions::default()).unwrap();
+        let out = v.validate(&serde_json::json!([1, 2]));
+        assert!(
+            !out.is_valid(),
+            "deep allOf with unevaluatedItems must fail-closed on depth exceeded"
+        );
+        assert!(
+            out.errors.iter().any(|e| e.message.contains("depth")),
+            "at least one error must mention 'depth', got: {:#?}",
+            out.errors
         );
     }
 

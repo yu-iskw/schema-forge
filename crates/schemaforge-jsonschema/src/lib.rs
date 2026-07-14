@@ -159,19 +159,24 @@ impl Validator {
         check_for_unsupported_keywords(schema)?;
         let root_anchors = collect_anchors(schema)?;
         let mut anchors_by_doc: HashMap<String, HashMap<String, Value>> = HashMap::new();
+        let mut registry = HashMap::new();
         if !options.base_uri.is_empty() {
-            anchors_by_doc.insert(options.base_uri.clone(), root_anchors.clone());
+            // Normalize the base_uri key so that a URI with dot-segments such
+            // as "https://example.com/./schemas/root.json" maps to the same
+            // registry entry as its canonical form.  Lookups via $ref always
+            // go through resolve_uri → normalize_path_in_uri, so the insert
+            // key must match the normalized form the lookup produces.
+            let norm_base = schemaforge_resolver::normalize_uri(options.base_uri.clone());
+            anchors_by_doc.insert(norm_base.clone(), root_anchors.clone());
+            // Insert the root schema under the normalized base_uri so that
+            // absolute self-refs such as
+            // `"$ref": "https://example.com/schema.json#anchor"` resolve
+            // against the root document rather than failing with "not found".
+            registry.insert(norm_base, schema.clone());
         }
         anchors_by_doc.insert(String::new(), root_anchors);
         let mut patterns = HashMap::new();
         collect_patterns_recursive(schema, &mut patterns)?;
-        // Insert the root schema under `base_uri` so that absolute self-refs
-        // such as `"$ref": "https://example.com/schema.json#anchor"` resolve
-        // against the root document rather than failing with "not found".
-        let mut registry = HashMap::new();
-        if !options.base_uri.is_empty() {
-            registry.insert(options.base_uri.clone(), schema.clone());
-        }
         Ok(Self {
             schema: schema.clone(),
             options,
@@ -201,12 +206,16 @@ impl Validator {
     /// regular expression, unsupported keywords, or duplicate `$anchor`
     /// names within the same document.
     pub fn add_schema(&mut self, id: impl Into<String>, schema: Value) -> Result<(), SchemaError> {
-        let id_str = id.into();
+        // Normalize the id before storing so that a URI with dot-segments such
+        // as "file:///tmp/./schema.json" maps to the same key as its canonical
+        // form.  Lookups through $ref always produce a normalized key via
+        // resolve_uri → normalize_path_in_uri, so the insert key must match.
+        let norm_id = schemaforge_resolver::normalize_uri(id.into());
         check_for_unsupported_keywords(&schema)?;
         collect_patterns_recursive(&schema, &mut self.patterns)?;
         let doc_anchors = collect_anchors(&schema)?;
-        self.anchors_by_doc.insert(id_str.clone(), doc_anchors);
-        self.registry.insert(id_str, schema);
+        self.anchors_by_doc.insert(norm_id.clone(), doc_anchors);
+        self.registry.insert(norm_id, schema);
         Ok(())
     }
 
@@ -223,6 +232,7 @@ impl Validator {
             anchors_by_doc: &self.anchors_by_doc,
             patterns: &self.patterns,
             depth: Cell::new(0),
+            branch_depth_exceeded: Cell::new(false),
         };
         validate_schema(&self.schema, instance, "", &ctx)
     }
@@ -385,6 +395,11 @@ pub(crate) struct ValidationContext<'a> {
     /// schemas such as `{"$ref": "#"}`.  Uses interior mutability so the
     /// signature of `validate_schema` stays `&ValidationContext`.
     pub(crate) depth: Cell<u32>,
+    /// Set to `true` by the unevaluated-properties/items pre-pass when the
+    /// branch-ref walk exceeds [`unevaluated::MAX_BRANCH_REF_DEPTH`].  When
+    /// set, `apply_unevaluated_*` fails closed rather than silently accepting
+    /// properties or items that could not be fully analysed.
+    pub(crate) branch_depth_exceeded: Cell<bool>,
 }
 
 /// Validate `instance` against `schema` at `path`.

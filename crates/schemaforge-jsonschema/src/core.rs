@@ -381,6 +381,52 @@ mod tests {
     }
 
     #[test]
+    fn base_uri_with_dot_segment_self_ref_resolves_after_normalize() {
+        // When base_uri contains a dot segment (e.g. "https://example.com/./root.json"),
+        // it must be normalized before storage so that an absolute self-ref to
+        // the canonical form ("https://example.com/root.json#anchor") still
+        // resolves to the root document's anchor table.
+        let schema = json!({
+            "$defs": {
+                "Str": {"$anchor": "myAnchor", "type": "string"}
+            },
+            "$ref": "https://example.com/root.json#myAnchor"
+        });
+        let opts = Opts {
+            base_uri: "https://example.com/./root.json".to_owned(),
+            ..Default::default()
+        };
+        let v = Validator::new(&schema, opts).unwrap();
+        assert!(
+            v.validate(&json!("hello")).is_valid(),
+            "absolute self-ref with normalized dot-segment base_uri must resolve"
+        );
+        assert!(
+            !v.validate(&json!(42)).is_valid(),
+            "anchor schema constraints must apply"
+        );
+    }
+
+    #[test]
+    fn add_schema_with_dot_segment_id_resolves_via_canonical_ref() {
+        // When a schema is added with a dot-segment URI
+        // ("https://example.com/./ext.json"), it must be normalised to its
+        // canonical form so that a $ref to the canonical URI resolves.
+        let root = json!({"$ref": "https://example.com/ext.json"});
+        let mut v = Validator::new(&root, ValidationOptions::default()).unwrap();
+        v.add_schema("https://example.com/./ext.json", json!({"type": "integer"}))
+            .unwrap();
+        assert!(
+            v.validate(&json!(42)).is_valid(),
+            "dot-segment add_schema id must normalise to canonical key"
+        );
+        assert!(
+            !v.validate(&json!("not-int")).is_valid(),
+            "referenced schema constraints must apply"
+        );
+    }
+
+    #[test]
     fn urn_ref_with_anchor_resolves_correctly_when_base_uri_is_http() {
         // urn:ext#anchorName must look up the anchor in urn:ext only,
         // even when the validator has a non-empty http base_uri.

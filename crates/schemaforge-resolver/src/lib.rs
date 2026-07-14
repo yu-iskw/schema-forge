@@ -23,7 +23,7 @@ pub use limit::LimitingResolver;
 pub use lock::{LockEntry, LockFile};
 pub use network::NetworkResolver;
 pub use offline::OfflineResolver;
-pub use uri::{is_absolute_uri, resolve_uri, split_uri_fragment};
+pub use uri::{is_absolute_uri, normalize_uri, resolve_uri, split_uri_fragment};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
