@@ -322,7 +322,7 @@ impl SchemaNode {
             .iter()
             .map(|(name, schema)| ObjectAttribute {
                 name: name.clone(),
-                required: self.object.required.iter().any(|required| required == name),
+                required: self.object.required.contains(name),
                 types: schema
                     .types
                     .names()
