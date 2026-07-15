@@ -60,6 +60,28 @@ fn source_digest_is_hex() {
 }
 
 #[test]
+fn compile_local_ref_to_anchor() {
+    let mut c = Compiler::new();
+    let src = r##"{
+        "type": "object",
+        "properties": {
+            "name": {"$ref": "#myStr"}
+        },
+        "$defs": {
+            "StringField": {
+                "$anchor": "myStr",
+                "type": "string",
+                "minLength": 1
+            }
+        }
+    }"##;
+    let ir = c.compile_json("test://anchor-ref.json", src).unwrap();
+    let name_prop = ir.root.properties.get("name").expect("property exists");
+    assert!(name_prop.types.string, "anchor ref lowered to string type");
+    assert_eq!(name_prop.string.min_length, Some(1));
+}
+
+#[test]
 fn compile_local_ref_to_defs() {
     let mut c = Compiler::new();
     let src = r##"{

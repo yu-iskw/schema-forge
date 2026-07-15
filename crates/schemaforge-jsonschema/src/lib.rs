@@ -234,14 +234,15 @@ impl Validator {
     /// Returns a [`ValidationOutput`] describing all errors (if any).
     #[must_use]
     pub fn validate(&self, instance: &Value) -> ValidationOutput {
+        let initial_base = initial_effective_base_uri(&self.options, &self.schema);
         let ctx = ValidationContext {
             registry: &self.registry,
             formats: &self.formats,
-            base_uri: &self.options.base_uri,
             root_schema: &self.schema,
             anchors_by_doc: &self.anchors_by_doc,
             patterns: &self.patterns,
             depth: Cell::new(0),
+            effective_base_uri: Cell::new(initial_base),
         };
         validate_schema(&self.schema, instance, "", &ctx)
     }
@@ -388,11 +389,38 @@ pub(crate) fn collect_known_property_names(obj: &Map<String, Value>) -> HashSet<
         .unwrap_or_default()
 }
 
+/// Read the current effective base URI without changing evaluation scope.
+pub(crate) fn peek_effective_base_uri(cell: &Cell<String>) -> String {
+    let base = cell.take();
+    cell.set(base.clone());
+    base
+}
+
+fn resolve_schema_id(id: &str, base: &str) -> String {
+    let resolved = schemaforge_resolver::resolve_uri(base, id);
+    let (key, _) = schemaforge_resolver::split_uri_fragment(&resolved);
+    schemaforge_resolver::normalize_uri(key.to_owned())
+}
+
+/// Initial effective base URI for validation: `options.base_uri` when set,
+/// otherwise the root schema's resolved `$id` when present.
+fn initial_effective_base_uri(options: &ValidationOptions, root_schema: &Value) -> String {
+    if !options.base_uri.is_empty() {
+        return schemaforge_resolver::normalize_uri(options.base_uri.clone());
+    }
+    let Value::Object(obj) = root_schema else {
+        return String::new();
+    };
+    let Some(Value::String(id)) = obj.get("$id") else {
+        return String::new();
+    };
+    resolve_schema_id(id, "")
+}
+
 /// Shared context passed through recursive validation calls.
 pub(crate) struct ValidationContext<'a> {
     pub(crate) registry: &'a HashMap<String, Value>,
     pub(crate) formats: &'a FormatRegistry,
-    pub(crate) base_uri: &'a str,
     /// The root schema document (used for local `$ref` JSON Pointer resolution).
     pub(crate) root_schema: &'a Value,
     /// Per-document `$anchor` tables.  Root doc is keyed by `""`.  External
@@ -404,6 +432,9 @@ pub(crate) struct ValidationContext<'a> {
     /// schemas such as `{"$ref": "#"}`.  Uses interior mutability so the
     /// signature of `validate_schema` stays `&ValidationContext`.
     pub(crate) depth: Cell<u32>,
+    /// Nearest enclosing schema base URI for resolving relative `$ref`s and
+    /// nested `$id` values.  Updated at each schema object that declares `$id`.
+    pub(crate) effective_base_uri: Cell<String>,
 }
 
 /// Validate `instance` against `schema` at `path`.
@@ -446,11 +477,21 @@ fn validate_object_schema(
     path: &str,
     ctx: &ValidationContext<'_>,
 ) -> ValidationOutput {
+    let saved_base = ctx.effective_base_uri.take();
+    if let Some(Value::String(id)) = obj.get("$id") {
+        ctx.effective_base_uri
+            .set(resolve_schema_id(id, &saved_base));
+    } else {
+        ctx.effective_base_uri.set(saved_base.clone());
+    }
+
     let mut out = ValidationOutput::ok();
     core::apply(obj, instance, path, ctx, &mut out);
     applicator::apply(obj, instance, path, ctx, &mut out);
     validation::apply(obj, instance, path, ctx, &mut out);
     unevaluated::apply(obj, instance, path, ctx, &mut out);
+
+    ctx.effective_base_uri.set(saved_base);
     out
 }
 

@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "Python bindings for Schemaforge (feature-gated FFI via PyO3)."
 
+[features]
+extension-module = []
+
 [dependencies]
 schemaforge-bindings.workspace = true
 

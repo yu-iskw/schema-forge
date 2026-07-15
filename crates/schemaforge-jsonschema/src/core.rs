@@ -31,14 +31,29 @@ fn apply_ref(
     let Some(Value::String(ref_uri)) = obj.get("$ref") else {
         return;
     };
-    match resolve_ref(ref_uri, ctx) {
-        Some(schema) => out.merge(crate::validate_schema(schema, instance, path, ctx)),
-        None => out.merge(ValidationOutput::abort(ValidationError::new(
+    let Some(schema) = resolve_ref(ref_uri, ctx) else {
+        out.merge(ValidationOutput::abort(ValidationError::new(
             path,
             format!("{path}/$ref"),
             format!("unresolved $ref: `{ref_uri}`"),
-        ))),
+        )));
+        return;
+    };
+
+    if ref_uri.starts_with('#') {
+        out.merge(crate::validate_schema(schema, instance, path, ctx));
+        return;
     }
+
+    let (base_ref, _) = schemaforge_resolver::split_uri_fragment(ref_uri);
+    let registry_key = build_registry_key(
+        base_ref,
+        &crate::peek_effective_base_uri(&ctx.effective_base_uri),
+    );
+    let saved_base = ctx.effective_base_uri.take();
+    ctx.effective_base_uri.set(registry_key);
+    out.merge(crate::validate_schema(schema, instance, path, ctx));
+    ctx.effective_base_uri.set(saved_base);
 }
 
 /// Resolve a `$ref` URI, returning a reference into the schema tree.
@@ -73,7 +88,10 @@ pub(crate) fn resolve_ref<'a>(ref_uri: &str, ctx: &ValidationContext<'a>) -> Opt
 
     // External reference: split off any fragment before the registry look-up.
     let (base_ref, fragment) = schemaforge_resolver::split_uri_fragment(ref_uri);
-    let key = build_registry_key(base_ref, ctx.base_uri);
+    let key = build_registry_key(
+        base_ref,
+        &crate::peek_effective_base_uri(&ctx.effective_base_uri),
+    );
     let doc = ctx.registry.get(&key)?;
 
     if fragment.is_empty() {
@@ -306,6 +324,27 @@ mod tests {
             "https://example.com/schemas/a.json",
         );
         assert_eq!(key, "https://other.com/schema.json");
+    }
+
+    #[test]
+    fn relative_ref_resolves_against_schema_id_not_options_base_uri() {
+        // Relative $ref must resolve against the nearest enclosing schema $id,
+        // not ValidationOptions::base_uri.
+        let root = json!({
+            "$id": "https://example.com/a.json",
+            "$ref": "b.json"
+        });
+        let mut v = Validator::new(&root, ValidationOptions::default()).unwrap();
+        v.add_schema("https://example.com/b.json", json!({"type": "integer"}))
+            .unwrap();
+        assert!(
+            v.validate(&json!(42)).is_valid(),
+            "relative $ref must resolve via schema $id to registered b.json"
+        );
+        assert!(
+            !v.validate(&json!("not-int")).is_valid(),
+            "schema constraints from b.json must apply"
+        );
     }
 
     #[test]

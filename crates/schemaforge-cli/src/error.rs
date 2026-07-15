@@ -76,6 +76,9 @@ pub fn from_compile(e: CompileError) -> CliError {
         CompileError::NodeLimitExceeded { limit } => {
             CliError::Parse(format!("schema node count exceeded limit of {limit} nodes"))
         }
+        CompileError::DuplicateAnchor { name } => {
+            CliError::Parse(format!("duplicate $anchor name: `{name}`"))
+        }
     }
 }
 

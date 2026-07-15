@@ -16,8 +16,11 @@ pub mod inspect;
 pub use explain::{ExplainResult, explain_ir};
 pub use inspect::{InspectResult, inspect_ir};
 
+use std::collections::HashMap;
+
 use indexmap::IndexMap;
 use schemaforge_dialect::detect;
+use schemaforge_dialect::schema_children::for_each_schema_child;
 use schemaforge_ir::{
     ArrayConstraints, NumericBound, NumericConstraints, ObjectConstraints, SchemaIr, SchemaNode,
     StringConstraints, TypeSet,
@@ -88,6 +91,12 @@ pub enum CompileError {
     InvalidSchemaKind {
         /// The JSON type name of the unexpected value.
         kind: String,
+    },
+    /// The same `$anchor` name appears more than once in the document.
+    #[error("duplicate $anchor `{name}` in document")]
+    DuplicateAnchor {
+        /// The duplicated anchor name.
+        name: String,
     },
     /// A schema keyword is recognised but not yet lowered by the compiler.
     ///
@@ -185,7 +194,7 @@ impl Default for Compiler {
 
 fn compile_value(uri: &str, value: &Value, digest: &str) -> Result<SchemaIr, CompileError> {
     let dialect = detect(value);
-    let mut ctx = LowerCtx::new(value);
+    let mut ctx = LowerCtx::new(value)?;
     let root = lower_schema(value, &mut ctx)?;
     Ok(SchemaIr::new(root, dialect.uri(), digest, uri))
 }
@@ -195,6 +204,8 @@ fn compile_value(uri: &str, value: &Value, digest: &str) -> Result<SchemaIr, Com
 struct LowerCtx<'a> {
     /// The root document value, used to follow `#/…` JSON-pointer references.
     root: &'a Value,
+    /// `$anchor` name → schema value, collected once at compile start.
+    anchors: HashMap<String, Value>,
     /// JSON Pointer strings of `$ref`s currently being lowered (cycle guard).
     visiting: Vec<String>,
     /// Number of [`SchemaNode`]s allocated so far during this compilation.
@@ -215,14 +226,41 @@ impl<'a> LowerCtx<'a> {
     /// when this budget is exhausted.
     pub(crate) const DEFAULT_MAX_NODE_COUNT: usize = 100_000;
 
-    const fn new(root: &'a Value) -> Self {
-        Self {
+    fn new(root: &'a Value) -> Result<Self, CompileError> {
+        Ok(Self {
             root,
+            anchors: collect_anchors(root)?,
             visiting: Vec::new(),
             node_count: 0,
             max_node_count: Self::DEFAULT_MAX_NODE_COUNT,
-        }
+        })
     }
+}
+
+/// Walk the schema tree once and collect the `$anchor` registry.
+///
+/// Returns [`CompileError::DuplicateAnchor`] when the same anchor name
+/// appears more than once in the document.
+fn collect_anchors(schema: &Value) -> Result<HashMap<String, Value>, CompileError> {
+    let mut anchors = HashMap::new();
+    collect_anchors_recursive(schema, &mut anchors)?;
+    Ok(anchors)
+}
+
+fn collect_anchors_recursive(
+    schema: &Value,
+    anchors: &mut HashMap<String, Value>,
+) -> Result<(), CompileError> {
+    let Value::Object(obj) = schema else {
+        return Ok(());
+    };
+    if let Some(Value::String(name)) = obj.get("$anchor") {
+        if anchors.contains_key(name.as_str()) {
+            return Err(CompileError::DuplicateAnchor { name: name.clone() });
+        }
+        anchors.insert(name.clone(), schema.clone());
+    }
+    for_each_schema_child(obj, |child| collect_anchors_recursive(child, anchors))
 }
 
 /// Lower a JSON Schema [`Value`] into an IR [`SchemaNode`].
@@ -283,14 +321,24 @@ fn lower_local_ref(ref_str: &str, ctx: &mut LowerCtx<'_>) -> Result<SchemaNode, 
     let target: Value = if ref_str == "#" {
         ctx.root.clone()
     } else {
-        let pointer = ref_str.strip_prefix('#').unwrap_or(ref_str);
-        ctx.root
-            .pointer(pointer)
-            .ok_or_else(|| CompileError::UnresolvedRef {
-                uri: ref_str.to_owned(),
-                reason: format!("JSON pointer `{pointer}` not found in document"),
-            })?
-            .clone()
+        let fragment = ref_str.strip_prefix('#').unwrap_or(ref_str);
+        if !fragment.is_empty() && !fragment.starts_with('/') {
+            ctx.anchors
+                .get(fragment)
+                .cloned()
+                .ok_or_else(|| CompileError::UnresolvedRef {
+                    uri: ref_str.to_owned(),
+                    reason: format!("anchor `{fragment}` not found in document"),
+                })?
+        } else {
+            ctx.root
+                .pointer(fragment)
+                .ok_or_else(|| CompileError::UnresolvedRef {
+                    uri: ref_str.to_owned(),
+                    reason: format!("JSON pointer `{fragment}` not found in document"),
+                })?
+                .clone()
+        }
     };
     ctx.visiting.push(ref_str.to_owned());
     let result = lower_schema(&target, ctx);

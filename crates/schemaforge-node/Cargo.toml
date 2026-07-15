@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "Node.js bindings for Schemaforge (feature-gated FFI via napi-rs)."
 
+[features]
+napi = []
+
 [dependencies]
 schemaforge-bindings.workspace = true
 

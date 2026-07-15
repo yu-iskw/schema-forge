@@ -28,7 +28,7 @@ use crate::error::{CliError, DiagFormat, from_compile, print_error, to_exit_code
 
 /// Schemaforge — hybrid JSON Schema compiler.
 #[derive(Debug, Parser)]
-#[command(name = "schemaforge", version, about, long_about = None)]
+#[command(name = "sfg", version, about, long_about = None)]
 struct Cli {
     /// Diagnostic output format.
     #[arg(long, global = true, default_value = "human", value_name = "FORMAT")]
