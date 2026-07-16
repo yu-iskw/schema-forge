@@ -5,6 +5,10 @@ site/
 .direnv/
 .env
 
+# Python cache
+__pycache__/
+*.pyc
+
 # Claude Code local configurations
 .claude/settings.local.json
 CLAUDE.local.md

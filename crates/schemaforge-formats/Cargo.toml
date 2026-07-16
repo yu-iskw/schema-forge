@@ -1,0 +1,18 @@
+[package]
+name = "schemaforge-formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Format validators for JSON Schema format keyword (annotation-default policy)."
+
+[dependencies]
+regex.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

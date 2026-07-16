@@ -1,0 +1,25 @@
+[package]
+name = "schemaforge-codegen-rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Rust code generation from the Schemaforge IR."
+
+[dependencies]
+schemaforge-ir.workspace = true
+schemaforge-analysis.workspace = true
+thiserror.workspace = true
+indexmap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+schemaforge-compiler.workspace = true
+
+[lints]
+workspace = true

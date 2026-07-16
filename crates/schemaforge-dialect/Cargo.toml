@@ -1,0 +1,17 @@
+[package]
+name = "schemaforge-dialect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "JSON Schema dialect detection and vocabulary management for Schemaforge."
+
+[dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

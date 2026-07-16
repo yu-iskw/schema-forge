@@ -1,0 +1,65 @@
+[
+  {
+    "description": "const validation",
+    "schema": { "const": 2 },
+    "tests": [
+      { "description": "same value is valid", "data": 2, "valid": true },
+      {
+        "description": "different value is invalid",
+        "data": 5,
+        "valid": false
+      },
+      {
+        "description": "different type is invalid",
+        "data": "2",
+        "valid": false
+      },
+      { "description": "null is invalid", "data": null, "valid": false }
+    ]
+  },
+  {
+    "description": "const with object",
+    "schema": { "const": { "foo": "bar", "baz": "bam" } },
+    "tests": [
+      {
+        "description": "same object is valid",
+        "data": { "foo": "bar", "baz": "bam" },
+        "valid": true
+      },
+      {
+        "description": "subset of object is invalid",
+        "data": { "foo": "bar" },
+        "valid": false
+      },
+      {
+        "description": "extra key is invalid",
+        "data": { "foo": "bar", "baz": "bam", "quux": "boom" },
+        "valid": false
+      },
+      {
+        "description": "different object is invalid",
+        "data": { "foo": "bar" },
+        "valid": false
+      }
+    ]
+  },
+  {
+    "description": "const with null",
+    "schema": { "const": null },
+    "tests": [
+      { "description": "null is valid", "data": null, "valid": true },
+      { "description": "false is invalid", "data": false, "valid": false },
+      { "description": "zero is invalid", "data": 0, "valid": false },
+      { "description": "empty string is invalid", "data": "", "valid": false }
+    ]
+  },
+  {
+    "description": "const with false",
+    "schema": { "const": false },
+    "tests": [
+      { "description": "false is valid", "data": false, "valid": true },
+      { "description": "true is invalid", "data": true, "valid": false },
+      { "description": "integer zero is invalid", "data": 0, "valid": false }
+    ]
+  }
+]

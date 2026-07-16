@@ -1,0 +1,64 @@
+[
+  {
+    "description": "allOf",
+    "schema": {
+      "allOf": [
+        { "properties": { "bar": { "type": "integer" } }, "required": ["bar"] },
+        { "properties": { "foo": { "type": "string" } }, "required": ["foo"] }
+      ]
+    },
+    "tests": [
+      {
+        "description": "allOf valid",
+        "data": { "foo": "baz", "bar": 2 },
+        "valid": true
+      },
+      {
+        "description": "mismatch second",
+        "data": { "foo": "baz" },
+        "valid": false
+      },
+      { "description": "mismatch first", "data": { "bar": 2 }, "valid": false },
+      {
+        "description": "wrong type",
+        "data": { "foo": "baz", "bar": "quux" },
+        "valid": false
+      }
+    ]
+  },
+  {
+    "description": "allOf simple types",
+    "schema": {
+      "allOf": [{ "type": "string" }, { "minLength": 3 }]
+    },
+    "tests": [
+      {
+        "description": "long string is valid",
+        "data": "foobar",
+        "valid": true
+      },
+      {
+        "description": "short string is invalid",
+        "data": "fo",
+        "valid": false
+      },
+      { "description": "number is invalid", "data": 42, "valid": false }
+    ]
+  },
+  {
+    "description": "allOf with base schema",
+    "schema": {
+      "type": "object",
+      "allOf": [{ "required": ["foo"] }, { "required": ["bar"] }]
+    },
+    "tests": [
+      {
+        "description": "valid with both required fields",
+        "data": { "foo": 1, "bar": 2 },
+        "valid": true
+      },
+      { "description": "missing bar", "data": { "foo": 1 }, "valid": false },
+      { "description": "missing foo", "data": { "bar": 2 }, "valid": false }
+    ]
+  }
+]

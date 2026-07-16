@@ -1,0 +1,40 @@
+[build-system]
+# maturin builds the Rust extension module when the `extension-module`
+# feature is enabled in the crate.  Without that feature maturin still
+# produces a wheel containing only the pure-Python fallback layer.
+requires = ["maturin>=1.4,<2"]
+build-backend = "maturin"
+
+[project]
+name = "schemaforge"
+version = "0.1.0"
+description = "Python bindings for the Schemaforge JSON Schema compiler"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+keywords = ["json-schema", "validation", "schemaforge"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Libraries",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.maturin]
+# Path to the Rust crate that contains the PyO3 extension module.
+# The `extension-module` Cargo feature activates the PyO3 FFI glue.
+# Without that feature the crate is a safe Rust library and maturin
+# produces a pure-Python wheel that falls back to the CLI.
+manifest-path = "../../crates/schemaforge-python/Cargo.toml"
+features = ["extension-module"]
+# Python source tree is in the `schemaforge/` sub-directory.
+python-source = "."
+module-name = "schemaforge._native"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

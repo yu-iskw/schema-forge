@@ -1,0 +1,54 @@
+[
+  {
+    "description": "simple enum validation",
+    "schema": { "enum": [1, 2, 3] },
+    "tests": [
+      { "description": "one is valid", "data": 1, "valid": true },
+      { "description": "two is valid", "data": 2, "valid": true },
+      { "description": "three is valid", "data": 3, "valid": true },
+      { "description": "four is invalid", "data": 4, "valid": false },
+      { "description": "zero is invalid", "data": 0, "valid": false }
+    ]
+  },
+  {
+    "description": "heterogeneous enum validation",
+    "schema": { "enum": [6, "foo", [], true, { "foo": 12 }] },
+    "tests": [
+      { "description": "integer is valid", "data": 6, "valid": true },
+      { "description": "string is valid", "data": "foo", "valid": true },
+      { "description": "empty array is valid", "data": [], "valid": true },
+      { "description": "true is valid", "data": true, "valid": true },
+      {
+        "description": "object is valid",
+        "data": { "foo": 12 },
+        "valid": true
+      },
+      {
+        "description": "different integer is invalid",
+        "data": 7,
+        "valid": false
+      },
+      {
+        "description": "different string is invalid",
+        "data": "bar",
+        "valid": false
+      },
+      {
+        "description": "non-empty array is invalid",
+        "data": [1],
+        "valid": false
+      },
+      { "description": "false is invalid", "data": false, "valid": false }
+    ]
+  },
+  {
+    "description": "enum with string type constraint",
+    "schema": { "type": "string", "enum": ["alice", "bob", "carol"] },
+    "tests": [
+      { "description": "alice is valid", "data": "alice", "valid": true },
+      { "description": "bob is valid", "data": "bob", "valid": true },
+      { "description": "dave is invalid", "data": "dave", "valid": false },
+      { "description": "number fails type check", "data": 1, "valid": false }
+    ]
+  }
+]

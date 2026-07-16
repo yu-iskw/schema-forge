@@ -1,0 +1,181 @@
+//! Schema inspection helpers: dialect, node count, and capabilities.
+
+use schemaforge_ir::{SchemaIr, SchemaNode};
+use serde::{Deserialize, Serialize};
+
+/// Summary produced by inspecting a compiled [`SchemaIr`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InspectResult {
+    /// Detected JSON Schema dialect URI.
+    pub dialect_uri: String,
+    /// Source URI (file path or remote URL).
+    pub source_uri: String,
+    /// SHA-256 hex digest of the source bytes.
+    pub source_digest: String,
+    /// Total number of schema nodes (root + all sub-schemas).
+    pub node_count: usize,
+    /// High-level capabilities detected in the root schema.
+    pub capabilities: Vec<String>,
+}
+
+/// Inspect a compiled [`SchemaIr`] and return a high-level summary.
+#[must_use]
+pub fn inspect_ir(ir: &SchemaIr) -> InspectResult {
+    InspectResult {
+        dialect_uri: ir.dialect_uri.clone(),
+        source_uri: ir.source_uri.clone(),
+        source_digest: ir.source_digest.clone(),
+        node_count: count_nodes(&ir.root),
+        capabilities: detect_capabilities(&ir.root),
+    }
+}
+
+fn count_nodes(node: &SchemaNode) -> usize {
+    let mut n = 1_usize;
+    for prop in node.properties.values() {
+        n += count_nodes(prop);
+    }
+    if let Some(ap) = &node.additional_properties {
+        n += count_nodes(ap);
+    }
+    if let Some(items) = &node.items {
+        n += count_nodes(items);
+    }
+    for pi in &node.prefix_items {
+        n += count_nodes(pi);
+    }
+    if let Some(not) = &node.not {
+        n += count_nodes(not);
+    }
+    for sub in node.all_of.iter().chain(&node.any_of).chain(&node.one_of) {
+        n += count_nodes(sub);
+    }
+    for def in node.defs.values() {
+        n += count_nodes(def);
+    }
+    n
+}
+
+fn detect_capabilities(node: &SchemaNode) -> Vec<String> {
+    let mut caps = collect_type_caps(node);
+    caps.extend(collect_combinator_caps(node));
+    caps
+}
+
+fn collect_type_caps(node: &SchemaNode) -> Vec<String> {
+    node.types
+        .type_names()
+        .into_iter()
+        .map(|n| if n == "null" { "nullable" } else { n }.to_owned())
+        .collect()
+}
+
+fn collect_combinator_caps(node: &SchemaNode) -> Vec<String> {
+    let mut caps = Vec::new();
+    if !node.all_of.is_empty() {
+        caps.push("allOf".to_owned());
+    }
+    if !node.any_of.is_empty() {
+        caps.push("anyOf".to_owned());
+    }
+    if !node.one_of.is_empty() {
+        caps.push("oneOf".to_owned());
+    }
+    if node.not.is_some() {
+        caps.push("not".to_owned());
+    }
+    caps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use schemaforge_ir::{SchemaNode, TypeSet};
+
+    #[test]
+    fn inspect_any_schema() {
+        let ir = crate::make_test_ir(SchemaNode::any());
+        let r = inspect_ir(&ir);
+        assert_eq!(r.node_count, 1);
+        assert!(r.capabilities.contains(&"string".to_owned()));
+    }
+
+    #[test]
+    fn inspect_object_schema() {
+        use schemaforge_ir::ObjectConstraints;
+        let mut node = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            ..SchemaNode::default()
+        };
+        node.object = ObjectConstraints {
+            required: vec!["name".to_owned()],
+            ..Default::default()
+        };
+        node.properties.insert(
+            "name".to_owned(),
+            SchemaNode {
+                types: TypeSet::from_json(&serde_json::json!("string")),
+                ..SchemaNode::default()
+            },
+        );
+        let ir = crate::make_test_ir(node);
+        let r = inspect_ir(&ir);
+        assert_eq!(r.node_count, 2);
+        assert!(r.capabilities.contains(&"object".to_owned()));
+    }
+
+    #[test]
+    fn count_nodes_includes_additional_properties() {
+        let node = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("object")),
+            additional_properties: Some(Box::new(SchemaNode {
+                types: TypeSet::from_json(&serde_json::json!("string")),
+                ..SchemaNode::default()
+            })),
+            ..SchemaNode::default()
+        };
+        let ir = crate::make_test_ir(node);
+        let r = inspect_ir(&ir);
+        // root + additional_properties schema
+        assert_eq!(r.node_count, 2);
+    }
+
+    #[test]
+    fn count_nodes_includes_prefix_items() {
+        let node = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("array")),
+            prefix_items: vec![
+                SchemaNode {
+                    types: TypeSet::from_json(&serde_json::json!("string")),
+                    ..SchemaNode::default()
+                },
+                SchemaNode {
+                    types: TypeSet::from_json(&serde_json::json!("integer")),
+                    ..SchemaNode::default()
+                },
+            ],
+            ..SchemaNode::default()
+        };
+        let ir = crate::make_test_ir(node);
+        let r = inspect_ir(&ir);
+        // root + 2 prefix_items
+        assert_eq!(r.node_count, 3);
+    }
+
+    #[test]
+    fn count_nodes_includes_not() {
+        let node = SchemaNode {
+            types: TypeSet::from_json(&serde_json::json!("string")),
+            not: Some(Box::new(SchemaNode {
+                types: TypeSet::from_json(&serde_json::json!("integer")),
+                ..SchemaNode::default()
+            })),
+            ..SchemaNode::default()
+        };
+        let ir = crate::make_test_ir(node);
+        let r = inspect_ir(&ir);
+        // root + not sub-schema
+        assert_eq!(r.node_count, 2);
+        assert!(r.capabilities.contains(&"not".to_owned()));
+    }
+}

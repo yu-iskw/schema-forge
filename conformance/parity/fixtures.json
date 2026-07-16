@@ -1,0 +1,196 @@
+[
+  {
+    "description": "string type - valid string",
+    "schema": { "type": "string" },
+    "instance": "hello",
+    "valid": true
+  },
+  {
+    "description": "string type - invalid number",
+    "schema": { "type": "string" },
+    "instance": 42,
+    "valid": false
+  },
+  {
+    "description": "number type - valid integer",
+    "schema": { "type": "number" },
+    "instance": 3,
+    "valid": true
+  },
+  {
+    "description": "number type - valid float",
+    "schema": { "type": "number" },
+    "instance": 3.14,
+    "valid": true
+  },
+  {
+    "description": "number type - invalid string",
+    "schema": { "type": "number" },
+    "instance": "text",
+    "valid": false
+  },
+  {
+    "description": "integer type - valid",
+    "schema": { "type": "integer" },
+    "instance": 7,
+    "valid": true
+  },
+  {
+    "description": "integer type - float rejected",
+    "schema": { "type": "integer" },
+    "instance": 1.5,
+    "valid": false
+  },
+  {
+    "description": "boolean type - valid true",
+    "schema": { "type": "boolean" },
+    "instance": true,
+    "valid": true
+  },
+  {
+    "description": "boolean type - invalid string",
+    "schema": { "type": "boolean" },
+    "instance": "true",
+    "valid": false
+  },
+  {
+    "description": "null type - valid",
+    "schema": { "type": "null" },
+    "instance": null,
+    "valid": true
+  },
+  {
+    "description": "null type - invalid zero",
+    "schema": { "type": "null" },
+    "instance": 0,
+    "valid": false
+  },
+  {
+    "description": "object type - valid",
+    "schema": { "type": "object" },
+    "instance": { "key": "value" },
+    "valid": true
+  },
+  {
+    "description": "object type - invalid array",
+    "schema": { "type": "object" },
+    "instance": [1, 2, 3],
+    "valid": false
+  },
+  {
+    "description": "array type - valid",
+    "schema": { "type": "array" },
+    "instance": [1, 2, 3],
+    "valid": true
+  },
+  {
+    "description": "array type - invalid object",
+    "schema": { "type": "array" },
+    "instance": { "a": 1 },
+    "valid": false
+  },
+  {
+    "description": "minimum constraint - valid",
+    "schema": { "type": "number", "minimum": 0 },
+    "instance": 0,
+    "valid": true
+  },
+  {
+    "description": "minimum constraint - invalid",
+    "schema": { "type": "number", "minimum": 0 },
+    "instance": -1,
+    "valid": false
+  },
+  {
+    "description": "minLength constraint - valid",
+    "schema": { "type": "string", "minLength": 3 },
+    "instance": "abc",
+    "valid": true
+  },
+  {
+    "description": "minLength constraint - invalid",
+    "schema": { "type": "string", "minLength": 3 },
+    "instance": "ab",
+    "valid": false
+  },
+  {
+    "description": "required properties - valid",
+    "schema": {
+      "type": "object",
+      "required": ["name"],
+      "properties": { "name": { "type": "string" } }
+    },
+    "instance": { "name": "Alice" },
+    "valid": true
+  },
+  {
+    "description": "required properties - missing",
+    "schema": {
+      "type": "object",
+      "required": ["name"],
+      "properties": { "name": { "type": "string" } }
+    },
+    "instance": { "age": 30 },
+    "valid": false
+  },
+  {
+    "description": "enum - valid",
+    "schema": { "enum": ["red", "green", "blue"] },
+    "instance": "red",
+    "valid": true
+  },
+  {
+    "description": "enum - invalid",
+    "schema": { "enum": ["red", "green", "blue"] },
+    "instance": "purple",
+    "valid": false
+  },
+  {
+    "description": "const - valid",
+    "schema": { "const": 42 },
+    "instance": 42,
+    "valid": true
+  },
+  {
+    "description": "const - invalid",
+    "schema": { "const": 42 },
+    "instance": 43,
+    "valid": false
+  },
+  {
+    "description": "allOf - valid",
+    "schema": { "allOf": [{ "type": "number" }, { "minimum": 5 }] },
+    "instance": 10,
+    "valid": true
+  },
+  {
+    "description": "allOf - invalid",
+    "schema": { "allOf": [{ "type": "number" }, { "minimum": 5 }] },
+    "instance": 3,
+    "valid": false
+  },
+  {
+    "description": "anyOf - valid first branch",
+    "schema": { "anyOf": [{ "type": "string" }, { "type": "number" }] },
+    "instance": "hello",
+    "valid": true
+  },
+  {
+    "description": "anyOf - valid second branch",
+    "schema": { "anyOf": [{ "type": "string" }, { "type": "number" }] },
+    "instance": 42,
+    "valid": true
+  },
+  {
+    "description": "anyOf - invalid neither branch",
+    "schema": { "anyOf": [{ "type": "string" }, { "type": "number" }] },
+    "instance": true,
+    "valid": false
+  },
+  {
+    "description": "empty schema accepts anything",
+    "schema": {},
+    "instance": { "anything": [1, 2, 3] },
+    "valid": true
+  }
+]
