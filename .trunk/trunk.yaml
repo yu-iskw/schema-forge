@@ -7,11 +7,12 @@ cli:
 plugins:
   sources:
     - id: trunk
-      ref: v1.6.7
+      ref: v1.10.2
       uri: https://github.com/trunk-io/plugins
 # Many linters and tools depend on runtimes - configure them here. (https://docs.trunk.io/runtimes)
 runtimes:
   enabled:
+    - python@3.14.4
     - go@1.26.0
     - node@24.11.0
 # This is the section where you manage your linters. (https://docs.trunk.io/check/configuration)
@@ -23,18 +24,18 @@ lint:
     - markdown-link-check@3.14.2
     - clippy@1.93.1
     - rustfmt@1.93.1
-    - semgrep@1.155.0
+    - semgrep@1.170.1
     - pre-commit-hooks@5.0.0
-    - trivy@0.69.3
-    - osv-scanner@1.9.2
-    - actionlint@1.7.7
-    - shellcheck@0.10.0
+    - trivy@0.72.0
+    - osv-scanner@2.4.0
+    - actionlint@1.7.12
+    - shellcheck@0.11.0
     - shfmt@3.6.0
-    - taplo@0.9.3
+    - taplo@0.10.0
     - yamllint@1.38.0
     - git-diff-check
-    - markdownlint@0.48.0
-    - prettier@3.8.1
+    - markdownlint@0.49.1
+    - prettier@3.9.6
 actions:
   enabled:
     - trunk-announce
