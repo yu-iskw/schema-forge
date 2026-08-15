@@ -3,14 +3,30 @@ name: CodeQL Analysis
 on:
   workflow_dispatch:
   pull_request:
+    types: [opened, reopened, ready_for_review]
     branches:
       - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - .github/workflows/codeql.yml
   push:
     branches:
       - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - .github/workflows/codeql.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   analyze:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Analyze
     runs-on: ubuntu-latest
     permissions:
